@@ -24,12 +24,12 @@ SYM(add_one):
 SYM(add_one):
   #ifdef _WIN32
     /* Windows x64 ABI: 1-th int in ecx, result in eax */
-    mov     eax, ecx
+    mov     %ecx, %eax
   #else
     /* System V (Linux/macOS Intel): 1-th int in edi, result eax */
-    mov     eax, edi
+    mov      %edi, %eax
   #endif
-    add     eax, 1
+    add      $1, %eax
     ret
 
 /* ===== fallback ===== */

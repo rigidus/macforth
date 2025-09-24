@@ -53,40 +53,42 @@ SYM(asm_sum_output_size):
 #elif defined(__x86_64__) && !defined(_WIN32)
 /* SysV: rdi, rsi, rdx, rcx, r8, r9 — аргументы; возврат в rax */
 SYM(asm_sum_output_size):
-    push    rbp
-    mov     rbp, rsp
-    sub     rsp, 16           // место под два int (8+8 для выравнивания)
+    push    %rbp
+    mov     %rsp, %rbp
+    sub     $16, %rsp          # место под два int (8+8 для выравнивания)
 
     // rdi уже содержит win (аргумент функции)
-    lea     rsi, [rbp-8]      // &w
-    lea     rdx, [rbp-4]      // &h
+    leaq    -8(%rbp), %rsi     # &w
+    leaq    -4(%rbp), %rdx     # &h
     call    SYM(get_output_size)
 
-    mov     eax, DWORD PTR [rbp-8]  // w
-    add     eax, DWORD PTR [rbp-4]  // w += h
+    mov     -8(%rbp), %eax     # w
+    add     -4(%rbp), %eax     # w += h
 
     leave
     ret
 
+
 /* ===================== Windows x64 (MS ABI) ===================== */
 #elif defined(_WIN32) && defined(__x86_64__)
-/* Windows x64: rcx, rdx, r8, r9 — аргументы; возврат в rax */
+/* Windows x64: %rcx, %rdx, %r8, %r9 — аргументы; возврат в %rax */
 SYM(asm_sum_output_size):
-    push    rbp
-    mov     rbp, rsp
-    sub     rsp, 32           // shadow space (16) + локалы, кратно 16
+    pushq   %rbp
+    movq    %rsp, %rbp
+    subq    $32, %rsp        # shadow space (16) + локалы, кратно 16
 
-    // rcx уже содержит win
-    lea     rdx, [rbp-8]      // &w
-    lea     r8,  [rbp-4]      // &h
+    # %rcx уже содержит win
+    leaq    -8(%rbp), %rdx   # &w
+    leaq    -4(%rbp), %r8    # &h
     call    SYM(get_output_size)
 
-    mov     eax, DWORD PTR [rbp-8]
-    add     eax, DWORD PTR [rbp-4]
+    movl    -8(%rbp), %eax
+    addl    -4(%rbp), %eax
 
-    add     rsp, 32
-    pop     rbp
+    addq    $32, %rsp
+    popq    %rbp
     ret
+
 
 /* ===================== Fallback: просто 0 ===================== */
 #else
