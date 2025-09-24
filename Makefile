@@ -55,6 +55,7 @@ run: $(BIN)
 
 clean:
 	rm -f $(BIN) *.o
+	rm -f web/*
 
 # MacOs
 mac: CC=clang
@@ -65,6 +66,37 @@ mac: all
 linux: CC?=gcc
 linux: CFLAGS+= -std=c11
 linux: all
+
+# Web (Emscripten)
+# C-файлы для веба (исключаем любой ASM, если вдруг он добавится в SRC)
+WEB_SRCS   := $(filter %.c,$(SRC))
+WEB_DIR    := web
+WEB_OUT    := $(WEB_DIR)/index.html
+EMCC       ?= emcc
+# Базовые флаги для SDL2 в браузере
+WEB_FLAGS  := -O2 -sUSE_SDL=2 -sALLOW_MEMORY_GROWTH=1 -sASSERTIONS=1 -sEXIT_RUNTIME=0
+# Можно добавить: -sSTACK_SIZE=1mb, -sINITIAL_MEMORY=64mb при необходимости
+
+.PHONY: web serve
+
+web: $(WEB_OUT)
+
+$(WEB_OUT): $(WEB_SRCS)
+	@mkdir -p $(WEB_DIR)
+	$(EMCC) $(CFLAGS) $(CPPFLAGS) $(WEB_SRCS) $(WEB_FLAGS) -o $(WEB_OUT)
+	@echo
+	@echo "Built: $(WEB_OUT)"
+	@echo "Open it via http server (see 'make serve')."
+
+# Требует 'emrun' из EMSDK. Альтернатива ниже — python http.server
+serve: web
+	emrun --no_browser --port 8080 $(WEB_OUT)
+
+# Альтернатива, если emrun не установлен:
+.PHONY: serve-py
+serve-py: web
+	cd $(WEB_DIR) && python3 -m http.server 8080
+
 
 # Cross-compile for MinGW (Linux/macOS, with toolchain)
 windows-mingw: CC?=x86_64-w64-mingw32-gcc

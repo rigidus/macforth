@@ -1,0 +1,13 @@
+* Targets
+
+** Web
+
+Перед сборкой: установи и активируй Emscripten SDK (один раз):
+
+#+BEGIN_SRC sh
+  git clone https://github.com/emscripten-core/emsdk.git
+  cd emsdk
+  ./emsdk install latest
+  ./emsdk activate latest
+  source ./emsdk_env.sh
+#+END_SRC
