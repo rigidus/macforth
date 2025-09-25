@@ -23,24 +23,27 @@ void get_output_size(SDL_Window *win, int *out_w, int *out_h) {
     }
 }
 
-static inline void put_pixel32(uint32_t *pixels, int pitch_pixels, int x, int y, uint32_t px) {
-    pixels[y * pitch_pixels + x] = px;
+/* === Рисование в произвольный 32-битный surface (АРGB8888 backbuffer) === */
+static inline void fill_surface32(SDL_Surface *surf, uint32_t color) {
+    int pitch_px = surf->pitch / 4;
+    uint32_t *base = (uint32_t*)surf->pixels;
+    for (int y = 0; y < surf->h; ++y) {
+        uint32_t *row = base + y * pitch_px;
+        for (int x = 0; x < surf->w; ++x) row[x] = color;
+    }
 }
 
-static void draw_filled_rect(SDL_Surface *surf, int x, int y, int w, int h, uint32_t color) {
-    if (SDL_MUSTLOCK(surf)) SDL_LockSurface(surf);
+static inline void draw_filled_rect32(SDL_Surface *surf, int x, int y, int w, int h, uint32_t color) {
     int pitch_px = surf->pitch / 4;
-    for (int yy = 0; yy < h; ++yy) {
-        int ry = y + yy;
-        if (ry < 0 || ry >= surf->h) continue;
-        uint32_t *row = (uint32_t*)surf->pixels + ry * pitch_px;
-        for (int xx = 0; xx < w; ++xx) {
-            int rx = x + xx;
-            if (rx < 0 || rx >= surf->w) continue;
-            row[rx] = color;
-        }
+    uint32_t *base = (uint32_t*)surf->pixels;
+    int x0 = (x < 0) ? 0 : x;
+    int y0 = (y < 0) ? 0 : y;
+    int x1 = x + w; if (x1 > surf->w) x1 = surf->w;
+    int y1 = y + h; if (y1 > surf->h) y1 = surf->h;
+    for (int yy = y0; yy < y1; ++yy) {
+        uint32_t *row = base + yy * pitch_px;
+        for (int xx = x0; xx < x1; ++xx) row[xx] = color;
     }
-    if (SDL_MUSTLOCK(surf)) SDL_UnlockSurface(surf);
 }
 
 static void center_square_rect(SDL_Surface *surf, int side, SDL_Rect *out) {
@@ -56,17 +59,53 @@ static int point_in_rect(int x, int y, const SDL_Rect *r) {
 // Глобальные/статические, чтобы к ним был доступ из sdl_tick():
 static SDL_Window *g_win = NULL;
 static SDL_Surface *g_surf = NULL;
+/* backbuffer: всегда ARGB8888, рисуем сюда, потом blit в окно */
+static SDL_Surface *g_back = NULL;
 static int g_running = 1;
 static int g_mouse_down = 0;
-static uint32_t g_bg = 0, g_paint = 0;
-static uint32_t g_button = 0; // цвет квадрата
+/* Цвета backbuffer’а в ARGB8888 (0xAARRGGBB) */
+static const uint32_t g_col_bg     = 0xFF000000; /* чёрный */
+static const uint32_t g_col_paint  = 0xFFFFFFFF; /* белый */
+/* Квадрат будет переключаться между двумя цветами */
+static const uint32_t g_col_button1 = 0xFFFF0000; /* красный */
+static const uint32_t g_col_button2 = 0xFF00FF00; /* зелёный */
+static uint32_t g_button_col = 0;                 /* текущий цвет квадрата */
+/* Размер квадрата */
 static const int SQUARE_SIDE = 120;
-static SDL_Rect g_square = NULL;
+static SDL_Rect g_square;
+
+/* Создать/пересоздать backbuffer ARGB8888 под размеры окна */
+static int ensure_backbuffer(int w, int h) {
+    if (g_back && (g_back->w == w) && (g_back->h == h)) return 1;
+    if (g_back) { SDL_FreeSurface(g_back); g_back = NULL; }
+    g_back = SDL_CreateRGBSurfaceWithFormat(0, w, h, 32, SDL_PIXELFORMAT_ARGB8888);
+    if (!g_back) {
+        SDL_Log("Create backbuffer failed: %s", SDL_GetError());
+        return 0;
+    }
+    return 1;
+}
+
+/* Пересчитать геометрию UI (центр квадрата) */
+static void recalc_ui_layout(void) {
+    center_square_rect(g_back ? g_back : g_surf, SQUARE_SIDE, &g_square);
+}
+
+/* Нарисовать статический UI (кнопку) в backbuffer */
+static void draw_static_ui(void) {
+    if (!g_back) return;
+    /* предполагается, что backbuffer уже залочен снаружи */
+    draw_filled_rect32(g_back, g_square.x, g_square.y, g_square.w, g_square.h, g_button_col);
+}
 
 
-static void sdl_redraw_static_ui(void) {
-    // если у тебя есть квадрат/кнопка по центру — перерисуй его тут
-    center_square_rect(g_surf, SQUARE_SIDE, &g_square);
+/* Безопасная запись точки в пределах backbuffer */
+static inline void draw_point_safe(int x, int y) {
+    if (!g_back) return;
+    if ((unsigned)x < (unsigned)g_back->w && (unsigned)y < (unsigned)g_back->h) {
+        int pitch_px = g_back->pitch / 4;
+        ((uint32_t*)g_back->pixels)[y * pitch_px + x] = g_col_paint;
+    }
 }
 
 static void sdl_tick(void) {
@@ -80,9 +119,17 @@ static void sdl_tick(void) {
             case SDL_MOUSEBUTTONDOWN:
                 if (e.button.button == SDL_BUTTON_LEFT) {
                     if (point_in_rect(e.button.x, e.button.y, &g_square)) {
-                        printf("Square clicked at (%d, %d)\\n",
+                        printf("Square clicked at (%d, %d)\n",
                                e.button.x, e.button.y);
                         fflush(stdout);
+                        /* Переключаем цвет квадрата и перерисовываем */
+                        g_button_col = (g_button_col == g_col_button1) ? g_col_button2 : g_col_button1;
+                        if (SDL_MUSTLOCK(g_back)) SDL_LockSurface(g_back);
+                        /* Перерисуем только квадрат — фон/точки не трогаем */
+                        draw_static_ui();
+                        if (SDL_MUSTLOCK(g_back)) SDL_UnlockSurface(g_back);
+                        SDL_BlitSurface(g_back, NULL, g_surf, NULL);
+                        SDL_UpdateWindowSurface(g_win);
                     } else {
                         g_mouse_down = 1;
                     }
@@ -93,15 +140,13 @@ static void sdl_tick(void) {
                 break;
             case SDL_MOUSEMOTION:
                 if (g_mouse_down) {
-                    if (SDL_MUSTLOCK(g_surf)) SDL_LockSurface(g_surf);
-                    // поставим «точку»
-                    int pitch_px = g_surf->pitch / 4;
-                    put_pixel32((uint32_t*)g_surf->pixels, pitch_px, e.motion.x, e.motion.y, g_paint);
-                    if (SDL_MUSTLOCK(g_surf)) SDL_UnlockSurface(g_surf);
-                    
-                    // Перерисуем квадрат поверх, чтобы он оставался видимым
-                    draw_filled_rect(g_surf, g_square.x, g_square.y, g_square.w, g_square.h, g_button);
-                    sdl_redraw_static_ui();
+                    /* Рисуем весь кадр в backbuffer под одним lock */
+                    if (SDL_MUSTLOCK(g_back)) SDL_LockSurface(g_back);
+                    draw_point_safe(e.motion.x, e.motion.y);
+                    draw_static_ui();
+                    if (SDL_MUSTLOCK(g_back)) SDL_UnlockSurface(g_back);
+                    /* Показать кадр: blit → окно */
+                    SDL_BlitSurface(g_back, NULL, g_surf, NULL);
                     SDL_UpdateWindowSurface(g_win);
                 }
                 break;
@@ -109,18 +154,21 @@ static void sdl_tick(void) {
                 if (e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED ||
                     e.window.event == SDL_WINDOWEVENT_EXPOSED) {
                     g_surf = SDL_GetWindowSurface(g_win);
-                    g_bg    = SDL_MapRGB(g_surf->format, 0, 0, 0);
-                    g_paint = SDL_MapRGB(g_surf->format, 255, 255, 255);
-                    g_button = SDL_MapRGB(g_surf->format, 255, 0, 0);
-                    center_square_rect(g_surf, SQUARE_SIDE, &g_square);
-                    // Обновим экран: просто перерисуем квадрат поверх текущего содержимого
-                    draw_filled_rect(g_surf, g_square.x, g_square.y, g_square.w, g_square.h, g_button);
+                    if (!g_surf) break;
+                    /* пересоздаём backbuffer под новый размер */
+                    if (!ensure_backbuffer(g_surf->w, g_surf->h)) break;
+                    recalc_ui_layout();
+                    /* можно не очищать, но для предсказуемости очистим фон */
+                    if (SDL_MUSTLOCK(g_back)) SDL_LockSurface(g_back);
+                    fill_surface32(g_back, g_col_bg);
+                    draw_static_ui();
+                    if (SDL_MUSTLOCK(g_back)) SDL_UnlockSurface(g_back);
+                    SDL_BlitSurface(g_back, NULL, g_surf, NULL);
                     // Сообщим новый размер области вывода
                     int ow, oh;
                     get_output_size(g_win, &ow, &oh);
                     printf("Размер области вывода изменён: %d x %d\n", ow, oh);
                     fflush(stdout);
-                    sdl_redraw_static_ui();
                     SDL_UpdateWindowSurface(g_win);
                 }
                 break;
@@ -153,29 +201,31 @@ int main(int argc, char **argv) {
     g_surf = SDL_GetWindowSurface(g_win);
     if (!g_surf) { SDL_Log("GetWindowSurface: %s", SDL_GetError()); SDL_DestroyWindow(g_win); SDL_Quit(); return 1; }
 
-    g_bg    = SDL_MapRGB(g_surf->format, 0, 0, 0);
-    g_paint = SDL_MapRGB(g_surf->format, 255, 255, 255);
-    g_button = SDL_MapRGB(g_surf->format, 255, 0, 0); // цвет квадрата
-
+    /* Создаём backbuffer под размер окна */
+    if (!ensure_backbuffer(g_surf->w, g_surf->h)) {
+        SDL_DestroyWindow(g_win);
+        SDL_Quit();
+        return 1;
+    }
+    
     int ow = 0, oh = 0;
     get_output_size(win, &ow, &oh);
     printf("Размер области вывода:: %d x %d\n", ow, oh);
     fflush(stdout);
 
+    /* Инициализация сцены: центр квадрата и первый кадр в backbuffer */
+    g_button_col = g_col_button1; /* стартовый цвет квадрата */
+    recalc_ui_layout();
+    if (SDL_MUSTLOCK(g_back)) SDL_LockSurface(g_back);
+    fill_surface32(g_back, g_col_bg);
+    draw_static_ui();
+    if (SDL_MUSTLOCK(g_back)) SDL_UnlockSurface(g_back);
+    SDL_BlitSurface(g_back, NULL, g_surf, NULL);
 
-    // Очистка фона
-    if (SDL_MUSTLOCK(g_surf)) SDL_LockSurface(g_surf);
-    memset(g_surf->pixels, 0, (size_t)g_surf->h * g_surf->pitch);
-    if (SDL_MUSTLOCK(g_surf)) SDL_UnlockSurface(g_surf);
-    SDL_UpdateWindowSurface(g_win);
-
-    center_square_rect(g_surf, SQUARE_SIDE, &g_square);
-    draw_filled_rect(g_surf, g_square.x, g_square.y, g_square.w, g_square.h, g_button);
-
-    #ifndef __EMSCRIPTEN__
+#ifndef __EMSCRIPTEN__
     int sum = asm_sum_output_size(win);
     printf("w + h = %d\n", sum);
-    #endif
+#endif
 
     SDL_UpdateWindowSurface(g_win);
 
@@ -188,6 +238,7 @@ int main(int argc, char **argv) {
     }
 #endif
 
+    if (g_back) { SDL_FreeSurface(g_back); g_back = NULL; }
     SDL_DestroyWindow(g_win);
 
     SDL_Quit();
