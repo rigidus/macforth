@@ -1,3 +1,23 @@
+* Libs
+
+** MacOs
+
+#+BEGIN_SRC sh
+  brew install sdl2_ttf
+#+END_SRC
+
+** Ubuntu:
+
+#+BEGIN_SRC sh
+  sudo apt install libsdl2-ttf-dev).
+#+END_SRC
+
+** Windows (MSYS2)
+
+#+BEGIN_SRC sh
+  pacman -S mingw-w64-x86_64-SDL2_ttf
+#+END_SRC
+
 * Targets
 
 ** Web
@@ -11,3 +31,6 @@
   ./emsdk activate latest
   source ./emsdk_env.sh
 #+END_SRC
+
+
+

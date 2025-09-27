@@ -1,4 +1,5 @@
 #include <SDL.h>
+#include <SDL_ttf.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
@@ -61,6 +62,10 @@ static SDL_Window *g_win = NULL;
 static SDL_Surface *g_surf = NULL;
 /* backbuffer: всегда ARGB8888, рисуем сюда, потом blit в окно */
 static SDL_Surface *g_back = NULL;
+/* Текст */
+static TTF_Font *g_font = NULL;         /* загружается из assets */
+static int g_font_px = 18;              /* размер шрифта */
+/* Состояние */
 static int g_running = 1;
 static int g_mouse_down = 0;
 /* Цвета backbuffer’а в ARGB8888 (0xAARRGGBB) */
@@ -98,6 +103,40 @@ static void draw_static_ui(void) {
     draw_filled_rect32(g_back, g_square.x, g_square.y, g_square.w, g_square.h, g_button_col);
 }
 
+/* создать surface с текстом (RGBA8), вызывающий должен SDL_FreeSurface */
+static SDL_Surface* text_to_surface(const char *utf8, uint32_t rgba)
+{
+    if (!g_font || !utf8) return NULL;
+    SDL_Color col = {
+        .r = (rgba >> 16) & 0xFF,
+        .g = (rgba >>  8) & 0xFF,
+        .b = (rgba >>  0) & 0xFF,
+        .a = (rgba >> 24) & 0xFF
+    };
+    /* Blended даёт сглаженный текст с альфой */
+    SDL_Surface *s = TTF_RenderUTF8_Blended(g_font, utf8, col);
+    return s; /* может быть не ARGB8888 */
+}
+
+/* нарисовать текст в backbuffer по (x,y); цвет ARGB */
+static void draw_text(int x, int y, const char *utf8, uint32_t argb)
+{
+    if (!g_back || !utf8 || !*utf8) return;
+    SDL_Surface *s = text_to_surface(utf8, /*RGBA*/ (argb << 8) | (argb >> 24));
+    if (!s) return;
+    /* при необходимости конвертируем в ARGB8888 */
+    SDL_Surface *conv = s;
+    if (s->format->format != SDL_PIXELFORMAT_ARGB8888) {
+        conv = SDL_ConvertSurfaceFormat(s, SDL_PIXELFORMAT_ARGB8888, 0);
+        SDL_FreeSurface(s);
+        if (!conv) return;
+    }
+    SDL_Rect dst = { x, y, conv->w, conv->h };
+    /* blit с учётом альфы */
+    SDL_SetSurfaceBlendMode(conv, SDL_BLENDMODE_BLEND);
+    SDL_BlitSurface(conv, NULL, g_back, &dst);
+    SDL_FreeSurface(conv);
+}
 
 /* Безопасная запись точки в пределах backbuffer */
 static inline void draw_point_safe(int x, int y) {
@@ -112,9 +151,19 @@ static void sdl_tick(void) {
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         switch (e.type) {
-            case SDL_QUIT: g_running = 0; break;
+            case SDL_QUIT: 
+                g_running = 0; 
+                #ifdef __EMSCRIPTEN__
+                    emscripten_cancel_main_loop();
+                #endif
+                break;
             case SDL_KEYDOWN:
-                if (e.key.keysym.sym == SDLK_ESCAPE) g_running = 0;
+                if (e.key.keysym.sym == SDLK_ESCAPE) {
+                    g_running = 0;
+                    #ifdef __EMSCRIPTEN__
+                        emscripten_cancel_main_loop();
+                    #endif
+                }
                 break;
             case SDL_MOUSEBUTTONDOWN:
                 if (e.button.button == SDL_BUTTON_LEFT) {
@@ -127,6 +176,8 @@ static void sdl_tick(void) {
                         if (SDL_MUSTLOCK(g_back)) SDL_LockSurface(g_back);
                         /* Перерисуем только квадрат — фон/точки не трогаем */
                         draw_static_ui();
+                        /* Выведем подпись рядом с квадратом */
+                        draw_text(g_square.x + g_square.w + 8, g_square.y, "clicked", 0xFFFFFFFF);                         
                         if (SDL_MUSTLOCK(g_back)) SDL_UnlockSurface(g_back);
                         SDL_BlitSurface(g_back, NULL, g_surf, NULL);
                         SDL_UpdateWindowSurface(g_win);
@@ -162,6 +213,8 @@ static void sdl_tick(void) {
                     if (SDL_MUSTLOCK(g_back)) SDL_LockSurface(g_back);
                     fill_surface32(g_back, g_col_bg);
                     draw_static_ui();
+                    /* перерисуем текст с новым размером */
+                    { char buf[64]; snprintf(buf, sizeof(buf), "%d x %d", g_surf->w, g_surf->h); draw_text(8, 8, buf, 0xFFFFFFFF); }
                     if (SDL_MUSTLOCK(g_back)) SDL_UnlockSurface(g_back);
                     SDL_BlitSurface(g_back, NULL, g_surf, NULL);
                     // Сообщим новый размер области вывода
@@ -191,6 +244,29 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    /* Инициализация SDL_ttf */
+    if (TTF_Init() != 0) {
+        SDL_Log("TTF_Init error: %s", TTF_GetError());
+        return 1;
+    }
+    /* Загружаем **моноширинный** шрифт DejaVu Sans Mono.
+       - desktop: ./assets/DejaVuSansMono.ttf
+       - web:     /assets/DejaVuSansMono.ttf (через --preload-file) */
+    const char *font_path =
+#ifdef __EMSCRIPTEN__
+        "/assets/DejaVuSansMono.ttf";
+#else
+        "assets/DejaVuSansMono.ttf";
+#endif
+    g_font = TTF_OpenFont(font_path, g_font_px);
+    if (!g_font) {
+        SDL_Log("TTF_OpenFont('%s') error: %s", font_path, TTF_GetError());
+        TTF_Quit();
+        SDL_Quit();
+        return 1;
+    }
+    TTF_SetFontHinting(g_font, TTF_HINTING_LIGHT);
+
     int w = 800, h = 600;
     SDL_Window *win = SDL_CreateWindow(
         "SDL Points Simple", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
@@ -210,7 +286,7 @@ int main(int argc, char **argv) {
     
     int ow = 0, oh = 0;
     get_output_size(win, &ow, &oh);
-    printf("Размер области вывода:: %d x %d\n", ow, oh);
+    printf("Размер области вывода: %d x %d\n", ow, oh);
     fflush(stdout);
 
     /* Инициализация сцены: центр квадрата и первый кадр в backbuffer */
@@ -219,6 +295,10 @@ int main(int argc, char **argv) {
     if (SDL_MUSTLOCK(g_back)) SDL_LockSurface(g_back);
     fill_surface32(g_back, g_col_bg);
     draw_static_ui();
+    /* Стартовая надпись с размером */
+    { char buf[64]; snprintf(buf, sizeof(buf), "%d x %d", g_surf->w, g_surf->h);
+      draw_text(8, 8, buf, 0xFFFFFFFF);
+    }
     if (SDL_MUSTLOCK(g_back)) SDL_UnlockSurface(g_back);
     SDL_BlitSurface(g_back, NULL, g_surf, NULL);
 
@@ -241,6 +321,8 @@ int main(int argc, char **argv) {
     if (g_back) { SDL_FreeSurface(g_back); g_back = NULL; }
     SDL_DestroyWindow(g_win);
 
+    if (g_font) { TTF_CloseFont(g_font); g_font = NULL; }
+    TTF_Quit();
     SDL_Quit();
     return 0;
 }
