@@ -114,9 +114,6 @@ static void damage_add(SDL_Rect rc) {
 /* Цвета backbuffer’а в ARGB8888 (0xAARRGGBB) */
 static const uint32_t g_col_bg     = 0xFF000000; /* чёрный */
 static const uint32_t g_col_paint  = 0xFFFFFFFF; /* белый */
-/* Квадрат будет переключаться между двумя цветами */
-static const uint32_t g_col_button1 = 0xFFFF0000; /* красный */
-static const uint32_t g_col_button2 = 0xFF00FF00; /* зелёный */
 /* Размер квадрата */
 static const int SQUARE_SIDE = 120;
 /* ============================= WM / окна ============================= */
@@ -178,6 +175,32 @@ static void wm_remove_window(Window* w){
             g_win_count--; break;
         }
 }
+/* найти максимальный zindex среди окон */
+static int wm_max_z(void){
+    int mz = (g_win_count>0) ? g_windows[0]->zindex : 0;
+    for (int i=1;i<g_win_count;i++){
+        if (g_windows[i]->zindex > mz) mz = g_windows[i]->zindex;
+    }
+    return mz;
+}
+static void wm_sort_by_z(){
+    /* простая сортировка по zindex */
+    for(int i=0;i<g_win_count;i++) for(int j=i+1;j<g_win_count;j++) {
+            if (g_windows[i]->zindex > g_windows[j]->zindex){
+                Window* t=g_windows[i]; g_windows[i]=g_windows[j]; g_windows[j]=t;
+            }
+        }
+}
+/* поднять окно на передний план (делает его самым верхним) */
+static void wm_bring_to_front(Window* w){
+    if (!w) return;
+    int newZ = wm_max_z() + 1;
+    if (w->zindex == newZ) return;
+    w->zindex = newZ;
+    wm_sort_by_z();                 /* пересортировать стек */
+    damage_add(w->frame);           /* перекомпозировать его область */
+    w->invalid_all = true;          /* на всякий случай перерисовать кэш */
+}
 static Window* wm_topmost_at(int x,int y){
     /* сверху вниз: больший zindex — выше; в нашем массиве будем сканировать с конца */
     if (g_win_count==0) return NULL;
@@ -189,14 +212,6 @@ static Window* wm_topmost_at(int x,int y){
         if(point_in_rect(x,y,&f) && w->zindex>=bestZ){ best=i; bestZ=w->zindex; }
     }
     return (best>=0)?g_windows[best]:NULL;
-}
-static void wm_sort_by_z(){
-    /* простая сортировка по zindex */
-    for(int i=0;i<g_win_count;i++) for(int j=i+1;j<g_win_count;j++) {
-            if (g_windows[i]->zindex > g_windows[j]->zindex){
-                Window* t=g_windows[i]; g_windows[i]=g_windows[j]; g_windows[j]=t;
-            }
-        }
 }
 static void wm_resize(int newW,int newH){
     /* пересоздаём g_back, инвалидация всего экрана */
@@ -273,6 +288,7 @@ typedef struct {
     uint32_t start_ms;    /* начало анимации */
     uint32_t period_ms;   /* полный цикл анимации, мс (туда-обратно) */
     float    phase_bias;   /* фазовый сдвиг в [0,1); клики добавляют +0.5 для разворота */
+    uint32_t colA, colB;   /* ПАРА цветов для интерполяции */
 } SquareWindow;
 static void draw_square_into(SDL_Surface* s, uint32_t color){
     /* центруем квадрат в пределах s */
@@ -312,16 +328,15 @@ static void tick_window2(Window* w, uint32_t tnow){
     uint32_t period = sw->period_ms ? sw->period_ms : 2000;
     uint32_t elapsed = tnow - sw->start_ms;
     float u = (period>0)? (float)(elapsed % period) / (float)period : 0.0f; /* 0..1 */
-    /* применим фазовый сдвиг (клики) */
-    u = u + sw->phase_bias;
-    u = u - floorf(u); /* нормализуем в [0,1) */
-    /* косинусное сглаживание: туда-обратно без резких переходов */
+    /* фазовый сдвиг от кликов */
+    u = u + sw->phase_bias; u = u - floorf(u);
+    /* косинусное сглаживание: туда-обратно */
     float m = 0.5f - 0.5f * cosf(2.0f * 3.14159265f * u);
-    sw->color = argb_lerp(g_col_button1, g_col_button2, m);
-    /* попросим перерисовать окно и запланируем следующий тик примерно через кадр */
+    sw->color = argb_lerp(sw->colA, sw->colB, m);
+    /* просим перерисовать окно и планируем следующий тик через кадр (~60 Гц) */
     w->invalid_all = true;
     damage_add(w->frame);
-    w->next_anim_ms = tnow + FRAME_MS; /* ~60 Гц */
+    w->next_anim_ms = tnow + FRAME_MS;
 }
 static void on_event_window2(Window* w, const SDL_Event* e, int user_id, int lx, int ly){
     (void)user_id;
@@ -330,11 +345,9 @@ static void on_event_window2(Window* w, const SDL_Event* e, int user_id, int lx,
         SDL_Rect cs = { (w->cache->w - SQUARE_SIDE)/2, (w->cache->h - SQUARE_SIDE)/2, SQUARE_SIDE, SQUARE_SIDE };
         if (point_in_rect(lx,ly,&cs)){
             SquareWindow* sw = (SquareWindow*)w;
-            /* сдвинем фазу на полцикла — визуально заметный "щёлк" без остановки анимации */
-            sw->phase_bias += 0.5f;
-            if (sw->phase_bias >= 1.0f) sw->phase_bias -= 1.0f;
-            /* мгновенно пересчитаем кадр и отметим грязь */
-            tick_window2(w, now_ms());
+            /* заметная реакция: разворачиваем фазу на полцикла */
+            sw->phase_bias += 0.5f; if (sw->phase_bias >= 1.0f) sw->phase_bias -= 1.0f;
+            tick_window2(w, now_ms()); /* мгновенный пересчёт кадра */
             w->invalid_all = true;
             window_invalidate(w, w->frame);
             printf("Square clicked at (%d,%d)\n", lx, ly); fflush(stdout);
@@ -488,8 +501,16 @@ static void sdl_tick(void) {
             Window* top = wm_topmost_at(mx,my);
             if (e.type==SDL_MOUSEBUTTONDOWN && e.button.button==SDL_BUTTON_LEFT){
                 /* поменять фокус пользователя на top (или на NULL, если клик по пустому месту) */
+                if (top){
+                    /* поднять на передний план окно, которое получило фокус */
+                    wm_bring_to_front(top);
+                }
                 g_focus[uid].user_id = uid;
                 g_focus[uid].focused = top;
+                /* если кликнули по пустому месту — можно снять фокус */
+                if (!top){
+                    /* опционально: damage всего экрана не нужен, стек не менялся */
+                }
             }
             /* маршрутизация ввода: только в сфокусированное для этого пользователя окно */
             Window* target = g_focus[uid].focused;
@@ -610,21 +631,40 @@ int main(int argc, char **argv) {
     static SquareWindow win2;
     int w2=360,h2=240, x2=(g_surf->w - w2)/2, y2=(g_surf->h - h2)/2;
     init_window((Window*)&win2, "window_2", (SDL_Rect){x2,y2,w2,h2}, 1, draw_window2, on_event_window2);
-    win2.color     = g_col_button1;         /* стартовый цвет */
+    /* цвета wnd2 — прежняя пара (красный <-> зелёный) */
+    win2.colA      = 0xFFFF0000;            /* красный  */
+    win2.colB      = 0xFF00FF00;            /* зелёный  */
+    win2.color     = win2.colA;             /* стартовый цвет */
     win2.start_ms  = now_ms();              /* начало анимации */
     win2.period_ms = 2000;                  /* полный цикл 2.0 сек */
     win2.phase_bias = 0.0f;
     ((Window*)&win2)->tick = tick_window2;
     wm_add_window((Window*)&win2);
+
+    /* окно_3: похоже на wnd2, но с ДРУГИМИ цветами; немного сдвинем вправо/вниз, z=2 */
+    static SquareWindow win3;
+    int w3=360,h3=240, x3=x2+40, y3=y2+40;
+    init_window((Window*)&win3, "window_3", (SDL_Rect){x3,y3,w3,h3}, 2, draw_window2, on_event_window2);
+    /* цвета wnd3 —, например, сине-розовый градиент */
+    win3.colA       = 0xFF1E90FF;           /* DodgerBlue */
+    win3.colB       = 0xFFFF66FF;           /* розово-лиловый */
+    win3.color      = win3.colA;
+    win3.start_ms   = now_ms();
+    win3.period_ms  = 3000;                 /* отличная длительность для разнообразия */
+    win3.phase_bias = 0.25f;                /* стартуем с фазовым сдвигом */
+    ((Window*)&win3)->tick = tick_window2;
+    wm_add_window((Window*)&win3);
+    
     wm_sort_by_z();
 
     /* начальный damage всего экрана, чтобы собрать первый кадр */
     /* g_back будет собран из внутренних окон; можно не заливать его дважды */
     fill_surface32(g_back, g_col_bg);
     damage_add(rect_make(0,0,g_surf->w,g_surf->h));
-    /* включим плавную анимацию цвета */
-    ((Window*)&win2)->animating    = true;
-    ((Window*)&win2)->next_anim_ms = now_ms(); /* тик сразу */
+
+    /* включим плавную анимацию цвета для обоих окон */
+    ((Window*)&win2)->animating    = true; ((Window*)&win2)->next_anim_ms = now_ms();
+    ((Window*)&win3)->animating    = true; ((Window*)&win3)->next_anim_ms = now_ms();
 
 #ifndef __EMSCRIPTEN__
     int sum = asm_sum_output_size(win);
