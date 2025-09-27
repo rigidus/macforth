@@ -6,6 +6,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include <math.h>
 
 #define clampi(v,lo,hi) ((v)<(lo)?(lo):((v)>(hi)?(hi):(v)))
 
@@ -228,10 +229,7 @@ static void wm_tick_animations(uint32_t tnow){
         Window* w = g_windows[i];
         if (!w->visible || !w->animating) continue;
         if (tnow >= w->next_anim_ms){
-            if (w->tick) w->tick(w, tnow);
-            /* если тик ничего не поменял — всё равно попросим перерисовку окна */
-            w->invalid_all = true;
-            damage_add(w->frame);
+            if (w->tick) w->tick(w, tnow); /* сам tick пометит invalid и damage */
         }
     }
 }
@@ -271,8 +269,10 @@ static void on_event_window1(Window* w, const SDL_Event* e, int user_id, int lx,
 /* окно_2: квадрат, который меняет цвет по клику; всегда перерисовывает свой cache целиком (маленькое окно) */
 typedef struct {
     Window base;
-    uint32_t color;
-    int blink_state;
+    uint32_t color;       /* текущий цвет */
+    uint32_t start_ms;    /* начало анимации */
+    uint32_t period_ms;   /* полный цикл анимации, мс (туда-обратно) */
+    float    phase_bias;   /* фазовый сдвиг в [0,1); клики добавляют +0.5 для разворота */
 } SquareWindow;
 static void draw_square_into(SDL_Surface* s, uint32_t color){
     /* центруем квадрат в пределах s */
@@ -295,13 +295,33 @@ static void draw_window2(Window* w, SDL_Rect area){
     draw_square_into(w->cache, sw->color);
     w->invalid_all=false;
 }
+/* линейная интерполяция по каналам 0xAARRGGBB */
+static inline uint32_t argb_lerp(uint32_t a, uint32_t b, float t){
+#define CH(c,s) ((int)(((c)>>(s))&0xFF))
+    int aA=CH(a,24), aR=CH(a,16), aG=CH(a,8), aB=CH(a,0);
+    int bA=CH(b,24), bR=CH(b,16), bG=CH(b,8), bB=CH(b,0);
+    int AA = (int)(aA + (bA-aA)*t);
+    int RR = (int)(aR + (bR-aR)*t);
+    int GG = (int)(aG + (bG-aG)*t);
+    int BB = (int)(aB + (bB-aB)*t);
+    return (uint32_t)((AA<<24)|(RR<<16)|(GG<<8)|BB);
+#undef CH
+}
 static void tick_window2(Window* w, uint32_t tnow){
-    (void)tnow;
     SquareWindow* sw = (SquareWindow*)w;
-    sw->blink_state ^= 1;
-    sw->color = sw->blink_state ? g_col_button2 : g_col_button1;
-    /* следующее срабатывание через 500 мс */
-    w->next_anim_ms = now_ms() + 500;
+    uint32_t period = sw->period_ms ? sw->period_ms : 2000;
+    uint32_t elapsed = tnow - sw->start_ms;
+    float u = (period>0)? (float)(elapsed % period) / (float)period : 0.0f; /* 0..1 */
+    /* применим фазовый сдвиг (клики) */
+    u = u + sw->phase_bias;
+    u = u - floorf(u); /* нормализуем в [0,1) */
+    /* косинусное сглаживание: туда-обратно без резких переходов */
+    float m = 0.5f - 0.5f * cosf(2.0f * 3.14159265f * u);
+    sw->color = argb_lerp(g_col_button1, g_col_button2, m);
+    /* попросим перерисовать окно и запланируем следующий тик примерно через кадр */
+    w->invalid_all = true;
+    damage_add(w->frame);
+    w->next_anim_ms = tnow + FRAME_MS; /* ~60 Гц */
 }
 static void on_event_window2(Window* w, const SDL_Event* e, int user_id, int lx, int ly){
     (void)user_id;
@@ -310,8 +330,13 @@ static void on_event_window2(Window* w, const SDL_Event* e, int user_id, int lx,
         SDL_Rect cs = { (w->cache->w - SQUARE_SIDE)/2, (w->cache->h - SQUARE_SIDE)/2, SQUARE_SIDE, SQUARE_SIDE };
         if (point_in_rect(lx,ly,&cs)){
             SquareWindow* sw = (SquareWindow*)w;
-            sw->color = (sw->color==g_col_button1)?g_col_button2:g_col_button1;
-            w->invalid_all = true; window_invalidate(w, w->frame);
+            /* сдвинем фазу на полцикла — визуально заметный "щёлк" без остановки анимации */
+            sw->phase_bias += 0.5f;
+            if (sw->phase_bias >= 1.0f) sw->phase_bias -= 1.0f;
+            /* мгновенно пересчитаем кадр и отметим грязь */
+            tick_window2(w, now_ms());
+            w->invalid_all = true;
+            window_invalidate(w, w->frame);
             printf("Square clicked at (%d,%d)\n", lx, ly); fflush(stdout);
         } else {
             w->drag.dragging = 1; w->drag.dx = lx; w->drag.dy = ly;
@@ -585,8 +610,10 @@ int main(int argc, char **argv) {
     static SquareWindow win2;
     int w2=360,h2=240, x2=(g_surf->w - w2)/2, y2=(g_surf->h - h2)/2;
     init_window((Window*)&win2, "window_2", (SDL_Rect){x2,y2,w2,h2}, 1, draw_window2, on_event_window2);
-    win2.color = g_col_button1;  /* стартовый цвет квадрата */
-    win2.blink_state = 0;
+    win2.color     = g_col_button1;         /* стартовый цвет */
+    win2.start_ms  = now_ms();              /* начало анимации */
+    win2.period_ms = 2000;                  /* полный цикл 2.0 сек */
+    win2.phase_bias = 0.0f;
     ((Window*)&win2)->tick = tick_window2;
     wm_add_window((Window*)&win2);
     wm_sort_by_z();
@@ -595,9 +622,9 @@ int main(int argc, char **argv) {
     /* g_back будет собран из внутренних окон; можно не заливать его дважды */
     fill_surface32(g_back, g_col_bg);
     damage_add(rect_make(0,0,g_surf->w,g_surf->h));
-    /* включим мигание квадрата (≈2 Гц) как пример анимации окна_2 */
-    ((Window*)&win2)->animating   = true;
-    ((Window*)&win2)->next_anim_ms = now_ms() + 500;
+    /* включим плавную анимацию цвета */
+    ((Window*)&win2)->animating    = true;
+    ((Window*)&win2)->next_anim_ms = now_ms(); /* тик сразу */
 
 #ifndef __EMSCRIPTEN__
     int sum = asm_sum_output_size(win);
