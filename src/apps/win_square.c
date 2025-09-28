@@ -104,7 +104,9 @@ static void on_event(Window *w, void* wm_ptr, const InputEvent *e, int lx, int l
             int nx = w->frame.x + (e->mouse.x - (w->frame.x + w->drag.dx));
             int ny = w->frame.y + (e->mouse.y - (w->frame.y + w->drag.dy));
             if (nx!=w->frame.x || ny!=w->frame.y){
-                w->frame.x=nx; w->frame.y=ny; w->invalid_all=true;
+                /* централизованное перемещение: отметит damage старого/нового места */
+                WM* wm = (WM*)wm_ptr;
+                wm_window_set_frame(wm, w, rect_make(nx, ny, w->frame.w, w->frame.h));
             }
         }
     } else if (e->type==3 && e->mouse.button==1 && e->mouse.state==0){

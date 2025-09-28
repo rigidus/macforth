@@ -12,7 +12,10 @@ void window_init(Window *w, const char *name, Rect frame, int z, const WindowVTa
     w->animating = false;
     w->invalid_all = true;
     w->vt = vt;
-    w->cache = surface_create_argb(frame.w, frame.h);
+    /* защитимся от нулевых размеров */
+    int cw = frame.w > 0 ? frame.w : 1;
+    int ch = frame.h > 0 ? frame.h : 1;
+    w->cache = surface_create_argb(cw, ch);
     surface_fill(w->cache, 0xFF000000);
 }
 

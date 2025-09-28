@@ -52,8 +52,12 @@ void surface_checkerboard(Surface* s, int tile, uint32_t c0, uint32_t c1){
             int bx=(x/tile)&1; row[x]= (bx^by)? c0:c1;
         }
     }
+    /* горизонтальные линии сетки — непрозрачные, без «memset 0x20» */
     for (int y=0;y<s->s->h;y++){
-        if (y%tile==0) memset((uint8_t*)s->s->pixels + y*s->s->pitch, 0x20, s->s->w*4);
+        if (y%tile==0){
+            uint32_t *row=(uint32_t*)s->s->pixels + y*pitch_px;
+            for (int x=0;x<s->s->w;x++) row[x] = 0xFF202020;
+        }
     }
     for (int x=0;x<s->s->w;x++){
         if (x%tile==0){

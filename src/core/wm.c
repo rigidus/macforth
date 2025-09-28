@@ -1,10 +1,27 @@
 #include "wm.h"
 #include "../gfx/surface.h"
 #include <stdlib.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int point_in_rect(int x,int y, Rect r){
     return x>=r.x && y>=r.y && x<r.x+r.w && y<r.y+r.h;
+}
+
+static void sort_by_z(WM* wm){
+    for(int i=0;i<wm->count;i++) for(int j=i+1;j<wm->count;j++){
+            if (wm->win[i]->zindex > wm->win[j]->zindex){
+                Window* t = wm->win[i]; wm->win[i]=wm->win[j]; wm->win[j]=t;
+            }
+        }
+}
+
+/* Сжать z-индексы к диапазону [0..count-1] сохраняя порядок «снизу-вверх». */
+static void renormalize_z(WM* wm){
+    sort_by_z(wm);
+    for (int i=0;i<wm->count;i++){
+        wm->win[i]->zindex = i;
+    }
 }
 
 WM* wm_create(int sw, int sh){
@@ -27,14 +44,6 @@ void wm_destroy(WM* wm){
     free(wm);
 }
 
-static void sort_by_z(WM* wm){
-    for(int i=0;i<wm->count;i++) for(int j=i+1;j<wm->count;j++){
-            if (wm->win[i]->zindex > wm->win[j]->zindex){
-                Window* t = wm->win[i]; wm->win[i]=wm->win[j]; wm->win[j]=t;
-            }
-        }
-}
-
 void wm_add(WM* wm, Window* w){
     if (wm->count>= (int)(sizeof(wm->win)/sizeof(wm->win[0]))) return;
     wm->win[wm->count++] = w;
@@ -54,8 +63,8 @@ static int max_z(WM* wm){
 }
 void wm_bring_to_front(WM* wm, Window* w){
     if (!w) return;
-    int newZ = max_z(wm)+1;
-    if (w->zindex != newZ){ w->zindex=newZ; sort_by_z(wm); }
+    w->zindex = max_z(wm)+1;
+    renormalize_z(wm);
     wm_damage_add(wm, w->frame);
     w->invalid_all = true;
 }
@@ -181,6 +190,11 @@ void wm_end_drag(WM* wm, int user_id){
     /* уведомить текущий hover о leave, если было */
     if (d->active && d->hover && d->hover->vt && d->hover->vt->on_drag_leave){
         d->hover->vt->on_drag_leave(d->hover, d);
+    }
+    /* освободить overlay превью, если был */
+    if (d->preview){
+        surface_free(d->preview);
+        d->preview = NULL;
     }
     memset(d, 0, sizeof(*d));
 }

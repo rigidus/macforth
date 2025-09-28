@@ -138,7 +138,7 @@ EMCC      ?= emcc
 WEB_OUT   := $(WEB_DIR)/index.html
 WEB_SRCS  := $(SRC_C)
 WEB_FLAGS := -O2 -sUSE_SDL=2 -sUSE_SDL_TTF=2 -sALLOW_MEMORY_GROWTH=1 -sASSERTIONS=1 -sEXIT_RUNTIME=0
-
+EMCFLAGS  := $(WEB_FLAGS)
 # ========================================================================
 
 .PHONY: all run clean mac linux windows-mingw windows-msys wasm serve serve-py tree
@@ -208,7 +208,7 @@ wasm: $(WEB_OUT)
 
 $(WEB_OUT): $(WEB_SRCS) $(WEB_DIR)/.assets | $(WEB_DIR)
 	@echo "emcc: $(WEB_SRCS)"
-	$(Q)$(EMCC) $(CFLAGS) $(CPPFLAGS) $(WEB_SRCS) $(WEB_FLAGS) \
+	$(Q)$(EMCC) $(filter-out -MMD -MP,$(CFLAGS)) $(CPPFLAGS) $(WEB_SRCS) $(EMCFLAGS) \
 	  --preload-file $(WEB_DIR)/assets@/assets \
 	  -o $(WEB_OUT)
 	@echo

@@ -40,6 +40,8 @@ typedef struct {
     bool  blink_on;
     uint32_t next_blink_ms;
 
+    int   glyph_h;   /* высота строки для выравнивания по базовой линии */
+
     /* цвета */
     uint32_t col_bg;
     uint32_t col_fg;
@@ -60,6 +62,8 @@ static void console_measure(ConsoleState *st, int win_w, int win_h){
     if (text_measure_utf8("M", &wM, &hM) != 0){ wM=8; hM=16; }
     st->cell_w = (wM>0? wM:8);
     st->cell_h = (hM>0? hM:16);
+    /* для выравнивания текста к низу ячейки используем высоту строки шрифта */
+    st->glyph_h = st->cell_h;
 
     st->cols = win_w / st->cell_w;  if (st->cols<1) st->cols=1;
     st->rows = win_h / st->cell_h;  if (st->rows<2) st->rows=2; // минимум: 1 история + 1 edit
@@ -125,7 +129,8 @@ static void draw_line_text(Surface *dst, int x, int y, const char *s, uint32_t a
 static void console_draw(Window *w, const Rect *area){
     (void)area;
     ConsoleState *st = (ConsoleState*)w->user;
-
+    int baseline_off = st->cell_h - st->glyph_h;
+    
     /* очистить окно */
     surface_fill(w->cache, st->col_bg);
 
@@ -145,19 +150,14 @@ static void console_draw(Window *w, const Rect *area){
         if (line_idx < st->count){
             int idx = (st->head + line_idx) % CON_BUF_LINES;
             const char *s = st->lines[idx] ? st->lines[idx] : "";
-            draw_line_text(w->cache,
-                           0,
-                           vis_row * st->cell_h + (st->cell_h - surface_h(text_render_utf8("A", st->col_fg))),
-                           s, st->col_fg);
+            draw_line_text(w->cache, 0, vis_row * st->cell_h + baseline_off, s, st->col_fg);
         }
     }
 
     /* рисуем редактируемую строку (последняя) */
     int edit_y = vis_row * st->cell_h;
     if (st->edit_len){
-        draw_line_text(w->cache, 0,
-                       edit_y + (st->cell_h - surface_h(text_render_utf8("A", st->col_fg))),
-                       st->edit, st->col_fg);
+        draw_line_text(w->cache, 0, edit_y + baseline_off, st->edit, st->col_fg);   
     }
     /* курсор */
     if (st->blink_on){
@@ -166,6 +166,17 @@ static void console_draw(Window *w, const Rect *area){
     }
 
     w->invalid_all = false;
+}
+
+/* --- destroy: освобождаем буферы истории --- */
+static void console_destroy(Window *w){
+    if (!w) return;
+    ConsoleState *st = (ConsoleState*)w->user;
+    if (st){
+        console_free_lines(st);
+        free(st);
+    }
+    w->user = NULL;
 }
 
 /* ---------- тик анимации (мигание курсора) ---------- */
@@ -240,7 +251,7 @@ static const WindowVTable V = {
     .on_event = console_on_event,
     .tick = console_tick,
     .on_focus = NULL,
-    .destroy = NULL,
+    .destroy = console_destroy,
     .on_frame_changed = console_on_frame_changed,
     .on_drag_enter = con_drag_enter,
     .on_drag_over  = con_drag_over,

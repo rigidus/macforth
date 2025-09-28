@@ -25,6 +25,7 @@ Platform* plat_create(const char *title, int w, int h){
     SDL_Window *win = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                                        w,h, SDL_WINDOW_SHOWN|SDL_WINDOW_RESIZABLE);
     if (!win) { SDL_Quit(); return NULL; }
+    SDL_StartTextInput();
     Platform *pf = (Platform*)SDL_calloc(1,sizeof(Platform));
     pf->win = win;
     pf->screen = SDL_GetWindowSurface(win);
@@ -35,6 +36,7 @@ Platform* plat_create(const char *title, int w, int h){
 
 void plat_destroy(Platform* pf){
     if (!pf) return;
+    SDL_StopTextInput();
     if (pf->back) surface_free(pf->back);
     if (pf->win) SDL_DestroyWindow(pf->win);
     SDL_Quit();
@@ -71,7 +73,7 @@ bool plat_poll_events_and_dispatch(Platform* pf, WM* wm){
             ie.type=3;
             ie.mouse.x = (e.type==SDL_MOUSEBUTTONDOWN||e.type==SDL_MOUSEBUTTONUP) ? e.button.x : 0;
             ie.mouse.y = (e.type==SDL_MOUSEBUTTONDOWN||e.type==SDL_MOUSEBUTTONUP) ? e.button.y : 0;
-            ie.mouse.button = (e.button.button==SDL_BUTTON_LEFT) ? 1 : 2;
+            ie.mouse.button = (int)e.button.button; /* реальные коды SDL_BUTTON_* */
             ie.mouse.state  = (e.type==SDL_MOUSEBUTTONDOWN) ? 1 : 0;
             input_route_mouse(wm, &ie);
             break;
