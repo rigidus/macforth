@@ -1,6 +1,7 @@
 #include "win_console.h"
 #include "../gfx/surface.h"
 #include "../gfx/text.h"
+#include "../core/drag.h"
 #include "../core/timing.h"
 #include <SDL.h>
 #include <string.h>
@@ -213,16 +214,27 @@ static void console_on_event(Window *w, void* wm, const InputEvent *e, int lx, i
    static void console_on_drop(Window* w, WMDrag* d, int lx, int ly){ (void)w;(void)lx;(void)ly; d->effect = WM_DRAG_COPY; }
 */
 
+/* Консоль не принимает DnD: выставляем REJECT при наведении */
+static void con_drag_enter(Window* w, const WMDrag* d){ (void)w;(void)d; }
+static void con_drag_leave(Window* w, const WMDrag* d){ (void)w;(void)d; }
+static void con_drag_over(Window* w, WMDrag* d, int lx, int ly){
+    (void)w;(void)lx;(void)ly;
+    d->effect = WM_DRAG_REJECT;
+}
+static void con_drop(Window* w, WMDrag* d, int lx, int ly){
+    (void)w;(void)d;(void)lx;(void)ly; /* ничего не делаем */
+}
+
 static const WindowVTable V = {
     .draw = console_draw,
     .on_event = console_on_event,
     .tick = console_tick,
     .on_focus = NULL,
     .destroy = NULL,
-    .on_drag_enter = NULL,
-    .on_drag_over  = NULL,
-    .on_drag_leave = NULL,
-    .on_drop       = NULL
+    .on_drag_enter = con_drag_enter,
+    .on_drag_over  = con_drag_over,
+    .on_drag_leave = con_drag_leave,
+    .on_drop       = con_drop
 };
 
 void win_console_init(Window *w, Rect frame, int z){

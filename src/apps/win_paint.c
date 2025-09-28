@@ -1,6 +1,7 @@
 #include "win_paint.h"
 #include "../gfx/surface.h"
 #include "../core/wm.h"
+#include "../core/drag.h"
 
 static void draw(Window *w, const Rect *area){
     (void)area;
@@ -27,6 +28,11 @@ static void on_event(Window *w, void* wm, const InputEvent *e, int lx, int ly){
     }
 }
 
+static void paint_drag_over(Window* w, WMDrag* d, int lx, int ly){
+    (void)w;(void)lx;(void)ly;
+    d->effect = WM_DRAG_REJECT;
+}
+
 static const WindowVTable V = {
     .draw = draw,
     .on_event = on_event,
@@ -34,7 +40,7 @@ static const WindowVTable V = {
     .on_focus = NULL,
     .destroy = NULL,
     .on_drag_enter = NULL,
-    .on_drag_over  = NULL,
+    .on_drag_over  = paint_drag_over,
     .on_drag_leave = NULL,
     .on_drop       = NULL
 };

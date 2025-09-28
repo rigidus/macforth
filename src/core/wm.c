@@ -140,12 +140,25 @@ void wm_start_drag(WM* wm, int user_id, Window* source, const char* mime,
     d->hot_x = hot_x; d->hot_y = hot_y;
     d->hover = NULL;
     d->effect = WM_DRAG_NONE;
+    d->px = d->x; d->py = d->y;
 }
 
 void wm_drag_update_pos(WM* wm, int user_id, int x, int y){
     WMDrag* d = wm_get_drag(wm, user_id);
     if (!d || !d->active) return;
+    /* Пометим damage для старого и нового положения overlay */
+    int ow = (d->preview ? surface_w(d->preview) : 24);
+    int oh = (d->preview ? surface_h(d->preview) : 24);
+    int oox = d->px - (d->preview ? d->hot_x : ow/2);
+    int ooy = d->py - (d->preview ? d->hot_y : oh/2);
+    wm_damage_add(wm, rect_make(oox, ooy, ow, oh));
+
+    d->px = d->x; d->py = d->y;
     d->x = x; d->y = y;
+
+    int nx = d->x - (d->preview ? d->hot_x : ow/2);
+    int ny = d->y - (d->preview ? d->hot_y : oh/2);
+    wm_damage_add(wm, rect_make(nx, ny, ow, oh));
 }
 
 void wm_end_drag(WM* wm, int user_id){
@@ -156,4 +169,11 @@ void wm_end_drag(WM* wm, int user_id){
         d->hover->vt->on_drag_leave(d->hover, d);
     }
     memset(d, 0, sizeof(*d));
+}
+
+bool wm_any_drag_active(WM* wm){
+    for (int i=0;i<WM_MAX_USERS;i++){
+        if (wm->drag[i].active) return true;
+    }
+    return false;
 }

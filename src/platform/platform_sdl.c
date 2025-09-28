@@ -107,7 +107,8 @@ bool plat_poll_events_and_dispatch(Platform* pf, WM* wm){
 
 void plat_compose_and_present(Platform* pf, WM* wm){
     int n = wm_damage_count(wm);
-    bool anim = wm_any_animating(wm);
+    bool anim = wm_any_animating(wm) || wm_any_drag_active(wm); /* dnd требует редрав без damage */
+    
     if (n==0 && !anim) return;
 
     uint32_t t = plat_now_ms();
@@ -159,6 +160,22 @@ void plat_compose_and_present(Platform* pf, WM* wm){
             int sx = inter.x - ox;
             int sy = inter.y - oy;
             blit_rect_from_to(d->preview, pf->back->s, sx,sy, inter.w, inter.h, inter.x, inter.y);
+
+            /* Бейдж запрета: если текущий hover выставил REJECT/ NONE */
+            if (d->effect==WM_DRAG_REJECT || d->effect==WM_DRAG_NONE){
+                /* рисуем простой «no» знак 16x16 в правом-нижнем углу превью */
+                int bw=16, bh=16;
+                int bx = ox + surface_w(d->preview) - bw;
+                int by = oy + surface_h(d->preview) - bh;
+                /* круг — грубо прямоугольник с «скруглением» не делаем, просто фон и диагональ */
+                surface_fill_rect(pf->back, bx, by, bw, bh, 0xCCAA0000);      /* красный фон с альфой */
+                surface_fill_rect(pf->back, bx+1, by+1, bw-2, bh-2, 0xFFFF0000); /* ярче внутри */
+                /* диагональная полоса */
+                for (int i=0;i<bh;i++){
+                    int rx = bx + i/2; /* примитивная диагональ */
+                    surface_fill_rect(pf->back, rx, by+i, 8, 1, 0xFFFFFFFF);
+                }
+            }
         }
         
         SDL_BlitSurface(pf->back->s, &r, pf->screen, &r);

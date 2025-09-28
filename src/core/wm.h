@@ -59,3 +59,6 @@ void wm_drag_update_pos(WM* wm, int user_id, int x, int y);
 void wm_end_drag(WM* wm, int user_id);
 /* Доступ к текущей сессии для обработчиков */
 WMDrag* wm_get_drag(WM* wm, int user_id);
+
+/* Есть ли хотя бы одна активная drag-сессия? */
+bool wm_any_drag_active(WM* wm);
