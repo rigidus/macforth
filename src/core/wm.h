@@ -37,7 +37,7 @@ void wm_bring_to_front(WM*, Window*);
 
 Window* wm_topmost_at(WM*, int x, int y);
 
-void wm_resize(WM*, int w, int h);
+void wm_resize(WM* wm, int newW, int newH);
 
 bool wm_any_animating(WM*);
 void wm_tick_animations(WM*, uint32_t now_ms);
@@ -62,3 +62,7 @@ WMDrag* wm_get_drag(WM* wm, int user_id);
 
 /* Есть ли хотя бы одна активная drag-сессия? */
 bool wm_any_drag_active(WM* wm);
+
+/* Безопасно изменить позицию/размер окна: пересоздаёт cache при изменении размера,
+   грязнит старый и новый прямоугольники, вызывает on_frame_changed */
+void wm_window_set_frame(WM* wm, Window* w, Rect newf);

@@ -65,6 +65,16 @@ static void console_measure(ConsoleState *st, int win_w, int win_h){
     st->rows = win_h / st->cell_h;  if (st->rows<2) st->rows=2; // минимум: 1 история + 1 edit
 }
 
+/* хук окна: пересчитать метрики сетки при смене размера */
+static void console_on_frame_changed(Window* w, int old_w, int old_h){
+    (void)old_w; (void)old_h;
+    ConsoleState *st = (ConsoleState*)w->user;
+    console_measure(st, surface_w(w->cache), surface_h(w->cache));
+    /* ограничим курсор по новым колонкам */
+    if (st->cursor_col > st->cols) st->cursor_col = st->cols;
+    w->invalid_all = true;
+}
+
 static void console_dirty_line(Window* w, ConsoleState* st, int vis_row){
     if (vis_row<0 || vis_row>=st->rows) return;
     Rect r = rect_make(w->frame.x, w->frame.y + vis_row*st->cell_h,
@@ -231,6 +241,7 @@ static const WindowVTable V = {
     .tick = console_tick,
     .on_focus = NULL,
     .destroy = NULL,
+    .on_frame_changed = console_on_frame_changed,
     .on_drag_enter = con_drag_enter,
     .on_drag_over  = con_drag_over,
     .on_drag_leave = con_drag_leave,

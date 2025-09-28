@@ -8,6 +8,13 @@ static void draw(Window *w, const Rect *area){
     w->invalid_all = false;
 }
 
+static void on_frame_changed(Window *w, int old_w, int old_h){
+    (void)old_w; (void)old_h;
+    /* перезалить фон под новый размер */
+    surface_checkerboard(w->cache, 16, 0xFF181818, 0xFF101010);
+    w->invalid_all = true;
+}
+
 static void on_event(Window *w, void* wm, const InputEvent *e, int lx, int ly){
     if (e->type==3){ // mouse button
         if (e->mouse.button==1 && e->mouse.state==1){
@@ -39,6 +46,7 @@ static const WindowVTable V = {
     .tick = NULL,
     .on_focus = NULL,
     .destroy = NULL,
+    .on_frame_changed = on_frame_changed,
     .on_drag_enter = NULL,
     .on_drag_over  = paint_drag_over,
     .on_drag_leave = NULL,

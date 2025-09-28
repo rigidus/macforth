@@ -38,6 +38,8 @@ typedef struct WindowVTable {
     void (*tick)(struct Window *w, uint32_t now_ms);
     void (*on_focus)(struct Window *w, bool focused);
     void (*destroy)(struct Window *w);
+    /* вызывается ядром при изменении w->frame (после пересоздания cache) */
+    void (*on_frame_changed)(struct Window *w, int old_w, int old_h);
     /* drag-n-drop колбэки (опциональные) */
     void (*on_drag_enter)(struct Window* w, const struct WMDrag* d);
     /* over может менять d->effect, тем самым сообщая, принимает ли целевой window payload */

@@ -69,17 +69,31 @@ Window* wm_topmost_at(WM* wm, int x,int y){
     return best;
 }
 
-void wm_resize(WM* wm, int w,int h){
-    wm->screen_w=w; wm->screen_h=h;
-    wm_damage_add(wm, rect_make(0,0,w,h));
-    for(int i=0;i<wm->count;i++){
-        Window *win=wm->win[i];
-        // простая эвристика: если окно начинается в (0,0) — считаем фон и растягиваем
-        if (win->frame.x==0 && win->frame.y==0){
-            if (win->cache) surface_free(win->cache);
-            win->frame.w=w; win->frame.h=h;
-            win->cache = surface_create_argb(w,h);
-            win->invalid_all = true;
+void wm_resize(WM* wm, int newW, int newH){
+    int oldW = wm->screen_w, oldH = wm->screen_h;
+    wm->screen_w = newW; wm->screen_h = newH;
+    /* damage всего экрана */
+    wm_damage_add(wm, rect_make(0,0,newW,newH));
+    /* эвристика «фон»: окно, равное предыдущему экрану и привязанное к (0,0), растягиваем */
+    for (int i=0;i<wm->count;i++){
+        Window* win = wm->win[i];
+        if (win->frame.x==0 && win->frame.y==0 &&
+            win->frame.w==oldW && win->frame.h==oldH){
+            wm_window_set_frame(wm, win, rect_make(0,0,newW,newH));
+        } else {
+            /* Кадр мог «выпасть» за новые границы — подожмём внутрь экрана */
+            Rect nf = win->frame;
+            if (nf.x + nf.w > newW) nf.x = (newW - nf.w < 0)? 0 : (newW - nf.w);
+            if (nf.y + nf.h > newH) nf.y = (newH - nf.h < 0)? 0 : (newH - nf.h);
+            if (nf.x < 0) nf.x = 0;
+            if (nf.y < 0) nf.y = 0;
+            if (nf.x!=win->frame.x || nf.y!=win->frame.y){
+                wm_window_set_frame(wm, win, nf);
+            } else {
+                /* размер без изменений — но перерисовать после resize полезно */
+                win->invalid_all = true;
+                wm_damage_add(wm, win->frame);
+            }
         }
     }
 }

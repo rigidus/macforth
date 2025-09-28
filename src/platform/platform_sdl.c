@@ -94,7 +94,10 @@ bool plat_poll_events_and_dispatch(Platform* pf, WM* wm){
                 pf->screen = SDL_GetWindowSurface(pf->win);
                 if (pf->back) surface_free(pf->back);
                 pf->back = surface_create_argb(pf->screen->w, pf->screen->h);
+                surface_fill(pf->back, 0xFF000000);
                 wm_resize(wm, pf->screen->w, pf->screen->h);
+                /* сразу пометим damage полного экрана на side окна */
+                wm_damage_add(wm, rect_make(0,0,pf->screen->w,pf->screen->h));
             } else if (e.window.event==SDL_WINDOWEVENT_EXPOSED){
                 wm_damage_add(wm, rect_make(0,0, pf->screen->w, pf->screen->h));
             }
