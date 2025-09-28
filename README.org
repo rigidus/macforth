@@ -32,5 +32,26 @@
   source ./emsdk_env.sh
 #+END_SRC
 
+* Files
 
-
+#+BEGIN_SRC sh
+  /src
+    platform/         // всё общение с SDL/OS
+      platform_sdl.c
+      platform_sdl.h
+    gfx/              // рендер и 2D-утилиты поверх SDL_Surface (но без SDL_Window!)
+      surface.c surface.h
+      text.c    text.h    // TTF, но наружу — только text_* API
+    core/             // независимое "ядро" WM (про окна, z-order, focus, damage)
+      wm.c    wm.h
+      window.c window.h   // интерфейс окна: vtable, базовые хелперы
+      damage.c damage.h
+      timing.c timing.h
+      input.c  input.h    // распределение событий по окнам, многопользовательский фокус
+    apps/             // конкретные типы окон (демо/виджеты)
+      win_paint.c   win_paint.h
+      win_square.c  win_square.h
+      win_console.c win_console.h
+  main.c
+  /include            // публичные заголовки 
+#+END_SRC
