@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
+struct WMDrag; /* из drag.h */
 
 typedef struct Surface Surface;
 
@@ -32,10 +33,17 @@ struct Window;
 
 typedef struct WindowVTable {
     void (*draw)(struct Window *w, const Rect *invalid);
-    void (*on_event)(struct Window *w, const InputEvent *e, int lx, int ly);
+    /* on_event знает про WM, ивенты приходят с user_id */
+    void (*on_event)(struct Window *w, void* wm, const InputEvent *e, int lx, int ly);
     void (*tick)(struct Window *w, uint32_t now_ms);
     void (*on_focus)(struct Window *w, bool focused);
     void (*destroy)(struct Window *w);
+    /* drag-n-drop колбэки (опциональные) */
+    void (*on_drag_enter)(struct Window* w, const struct WMDrag* d);
+    /* over может менять d->effect, тем самым сообщая, принимает ли целевой window payload */
+    void (*on_drag_over)(struct Window* w, struct WMDrag* d, int lx, int ly);
+    void (*on_drag_leave)(struct Window* w, const struct WMDrag* d);
+    void (*on_drop)(struct Window* w, struct WMDrag* d, int lx, int ly);
 } WindowVTable;
 
 typedef struct Window {

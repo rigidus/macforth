@@ -172,7 +172,7 @@ static void console_tick(Window *w, uint32_t now){
 
 /* ---------- ввод ---------- */
 
-static void console_on_event(Window *w, const InputEvent *e, int lx, int ly){
+static void console_on_event(Window *w, void* wm, const InputEvent *e, int lx, int ly){
     (void)lx; (void)ly;
     ConsoleState *st = (ConsoleState*)w->user;
 
@@ -205,7 +205,25 @@ static void console_on_event(Window *w, const InputEvent *e, int lx, int ly){
 
 /* ---------- vtable и init ---------- */
 
-static const WindowVTable V = { console_draw, console_on_event, console_tick, NULL, NULL };
+/* Пример: при удержании ЛКМ начать dnd строки (простая демонстрация)
+   — закомментировано, чтобы не мешать обычному вводу
+   static void console_on_drag_enter(Window* w, const WMDrag* d){ (void)w;(void)d; }
+   static void console_on_drag_over(Window* w, WMDrag* d, int lx, int ly){ (void)lx;(void)ly; d->effect = WM_DRAG_COPY; }
+   static void console_on_drag_leave(Window* w, const WMDrag* d){ (void)w;(void)d; }
+   static void console_on_drop(Window* w, WMDrag* d, int lx, int ly){ (void)w;(void)lx;(void)ly; d->effect = WM_DRAG_COPY; }
+*/
+
+static const WindowVTable V = {
+    .draw = console_draw,
+    .on_event = console_on_event,
+    .tick = console_tick,
+    .on_focus = NULL,
+    .destroy = NULL,
+    .on_drag_enter = NULL,
+    .on_drag_over  = NULL,
+    .on_drag_leave = NULL,
+    .on_drop       = NULL
+};
 
 void win_console_init(Window *w, Rect frame, int z){
     window_init(w, "console", frame, z, &V);

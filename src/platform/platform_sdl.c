@@ -4,6 +4,7 @@
 #include "../core/input.h"
 #include "../core/timing.h"
 #include "../gfx/surface.h"
+#include "../core/drag.h"
 
 struct Platform {
     SDL_Window  *win;
@@ -145,6 +146,21 @@ void plat_compose_and_present(Platform* pf, WM* wm){
 
         // ВАЖНО: скопировать готовый регион из backbuffer в surface окна
         SDL_Rect r = { dr.x, dr.y, dr.w, dr.h };
+
+        /* ----- поверх окон дорисовываем активные drag overlay для всех пользователей ----- */
+        for (int uid=0; uid<WM_MAX_USERS; ++uid){
+            WMDrag* d = wm_get_drag(wm, uid);
+            if (!d || !d->active || !d->preview) continue;
+            int ox = d->x - d->hot_x;
+            int oy = d->y - d->hot_y;
+            Rect ovr = rect_make(ox, oy, surface_w(d->preview), surface_h(d->preview));
+            Rect inter = rect_intersect(dr, ovr);
+            if (rect_is_empty(inter)) continue;
+            int sx = inter.x - ox;
+            int sy = inter.y - oy;
+            blit_rect_from_to(d->preview, pf->back->s, sx,sy, inter.w, inter.h, inter.x, inter.y);
+        }
+        
         SDL_BlitSurface(pf->back->s, &r, pf->screen, &r);
     }
 

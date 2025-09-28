@@ -1,6 +1,7 @@
 #include "wm.h"
 #include "../gfx/surface.h"
 #include <stdlib.h>
+#include <string.h>
 
 static int point_in_rect(int x,int y, Rect r){
     return x>=r.x && y>=r.y && x<r.x+r.w && y<r.y+r.h;
@@ -10,6 +11,8 @@ WM* wm_create(int sw, int sh){
     WM *wm = (WM*)calloc(1,sizeof(WM));
     wm->screen_w = sw; wm->screen_h = sh;
     damage_init(&wm->damage);
+    /* drag-сессии пустые */
+    memset(wm->drag, 0, sizeof(wm->drag));
     return wm;
 }
 void wm_destroy(WM* wm){
@@ -113,4 +116,44 @@ void wm_focus_set(WM* wm, int uid, Window *w){
 Window* wm_focus_get(WM* wm, int uid){
     if (uid<0 || uid>= (int)(sizeof(wm->focus)/sizeof(wm->focus[0]))) return NULL;
     return wm->focus[uid].focused;
+}
+
+/* ---- Drag&Drop ---- */
+static int valid_uid(int uid){ return uid>=0 && uid<WM_MAX_USERS; }
+
+WMDrag* wm_get_drag(WM* wm, int user_id){
+    if (!valid_uid(user_id)) return NULL;
+    return &wm->drag[user_id];
+}
+
+void wm_start_drag(WM* wm, int user_id, Window* source, const char* mime,
+                   void* data, size_t size, Surface* preview, int hot_x, int hot_y){
+    if (!valid_uid(user_id)) return;
+    WMDrag* d = &wm->drag[user_id];
+    d->active = true;
+    d->user_id = user_id;
+    d->source = source;
+    d->mime = mime;
+    d->data = data;
+    d->size = size;
+    d->preview = preview;
+    d->hot_x = hot_x; d->hot_y = hot_y;
+    d->hover = NULL;
+    d->effect = WM_DRAG_NONE;
+}
+
+void wm_drag_update_pos(WM* wm, int user_id, int x, int y){
+    WMDrag* d = wm_get_drag(wm, user_id);
+    if (!d || !d->active) return;
+    d->x = x; d->y = y;
+}
+
+void wm_end_drag(WM* wm, int user_id){
+    WMDrag* d = wm_get_drag(wm, user_id);
+    if (!d) return;
+    /* уведомить текущий hover о leave, если было */
+    if (d->active && d->hover && d->hover->vt && d->hover->vt->on_drag_leave){
+        d->hover->vt->on_drag_leave(d->hover, d);
+    }
+    memset(d, 0, sizeof(*d));
 }

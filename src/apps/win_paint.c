@@ -6,7 +6,8 @@ static void draw(Window *w, const Rect *area){
     (void)area;
     w->invalid_all = false;
 }
-static void on_event(Window *w, const InputEvent *e, int lx, int ly){
+
+static void on_event(Window *w, void* wm, const InputEvent *e, int lx, int ly){
     if (e->type==3){ // mouse button
         if (e->mouse.button==1 && e->mouse.state==1){
             uint32_t *px = surface_pixels(w->cache);
@@ -25,7 +26,18 @@ static void on_event(Window *w, const InputEvent *e, int lx, int ly){
         }
     }
 }
-static const WindowVTable V = { draw, on_event, NULL, NULL, NULL };
+
+static const WindowVTable V = {
+    .draw = draw,
+    .on_event = on_event,
+    .tick = NULL,
+    .on_focus = NULL,
+    .destroy = NULL,
+    .on_drag_enter = NULL,
+    .on_drag_over  = NULL,
+    .on_drag_leave = NULL,
+    .on_drop       = NULL
+};
 
 void win_paint_init(Window *w, Rect frame, int z){
     window_init(w, "paint", frame, z, &V);

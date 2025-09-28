@@ -1,6 +1,7 @@
 #include "win_square.h"
 #include "../gfx/surface.h"
 #include "../core/wm.h"
+#include "../core/drag.h"
 #include "../core/timing.h"
 #include <math.h>
 #include <stdlib.h>
@@ -10,6 +11,11 @@ typedef struct {
     uint32_t color, colA, colB;
     uint32_t start_ms, period_ms;
     float    phase_bias;
+    /* --- DnD (источник) --- */
+    int drag_arm;         /* 1, если LMB внутри квадрата и ждём движения для старта DnD */
+    int start_mx, start_my; /* экранные координаты нажатия */
+    /* payload: что переносим между окнами квадратов */
+    SquarePayload drag_payload;
 } SquareState;
 
 static inline uint32_t argb_lerp(uint32_t a, uint32_t b, float t){
@@ -44,34 +50,70 @@ static void tick(Window *w, uint32_t now){
     w->next_anim_ms = next_frame(now);
 }
 
-static void on_event(Window *w, const InputEvent *e, int lx, int ly){
+/* маленький предпросмотр для overlay */
+static Surface* make_preview(uint32_t color){
+    int s=40;
+    Surface* p = surface_create_argb(s, s);
+    if (!p) return NULL;
+    surface_fill(p, 0xAA000000);                 /* легкая тень/фон */
+    surface_fill_rect(p, 2,2, s-4, s-4, color);  /* сам квадрат с рамкой */
+    return p;
+}
+
+
+static void on_event(Window *w, void* wm_ptr, const InputEvent *e, int lx, int ly){
     (void)ly;
+    WM* wm = (WM*)wm_ptr;
+    SquareState *st=(SquareState*)w->user;
+    int side=120;
+    int x=(surface_w(w->cache)-side)/2;
+    int y=(surface_h(w->cache)-side)/2;
+    int inside_sq = (lx>=x && lx<x+side && ly>=y && ly<y+side);
+
     if (e->type==3 && e->mouse.button==1 && e->mouse.state==1){
-        // если клик по квадрату — развернуть фазу на полцикла
-        int side=120;
-        int x=(surface_w(w->cache)-side)/2;
-        int y=(surface_h(w->cache)-side)/2;
-        if (lx>=x && lx<x+side && ly>=y && ly<y+side){
-            SquareState *st=(SquareState*)w->user;
-            st->phase_bias += 0.5f; if (st->phase_bias>=1.0f) st->phase_bias-=1.0f;
-            w->invalid_all=true;
+        if (inside_sq){
+            /* «армим» DnD: если пользователь начнёт тянуть — стартанём перенос */
+            st->drag_arm = 1;
+            st->start_mx = e->mouse.x;
+            st->start_my = e->mouse.y;
         } else {
-            // иначе начать drag
+            /* drag самого окна (как раньше) */
             w->drag.dragging=1; w->drag.dx=lx; w->drag.dy=ly;
         }
-    } else if (e->type==4 && (e->mouse.buttons & SDL_BUTTON_LMASK) && w->drag.dragging){
-        int nx = w->frame.x + (e->mouse.x - (w->frame.x + w->drag.dx));
-        int ny = w->frame.y + (e->mouse.y - (w->frame.y + w->drag.dy));
-        /* int maxx = wm->screen_w - w->frame.w; */
-        /* int maxy = wm->screen_h - w->frame.h; */
-        /* if (nx < 0) nx = 0; else if (nx > maxx) nx = maxx; */
-        /* if (ny < 0) ny = 0; else if (ny > maxy) ny = maxy; */
-        if (nx!=w->frame.x || ny!=w->frame.y){
-            w->frame.x = nx;
-            w->frame.y = ny;
+    } else if (e->type==4 && (e->mouse.buttons & 1)){
+        /* движение с зажатой ЛКМ */
+        if (st->drag_arm){
+            int dx = e->mouse.x - st->start_mx;
+            int dy = e->mouse.y - st->start_my;
+            if (dx*dx + dy*dy >= 9){ /* порог ~3px */
+                /* стартуем DnD квадрата */
+                st->drag_payload.colA = st->colA;
+                st->drag_payload.colB = st->colB;
+                st->drag_payload.period_ms = st->period_ms;
+                st->drag_payload.phase_bias = st->phase_bias;
 
+                Surface* prev = make_preview(st->color);
+                /* горячая точка — центр превью */
+                wm_start_drag(wm, e->user_id, w, "application/x-square",
+                              &st->drag_payload, sizeof(st->drag_payload),
+                              prev, surface_w(prev)/2, surface_h(prev)/2);
+                /* примечание: prev не освободим здесь — платформа рисует overlay; освобождение можно добавить в wm_end_drag при необходимости */
+                st->drag_arm = 0;
+            }
+        } else if (w->drag.dragging){
+            int nx = w->frame.x + (e->mouse.x - (w->frame.x + w->drag.dx));
+            int ny = w->frame.y + (e->mouse.y - (w->frame.y + w->drag.dy));
+            if (nx!=w->frame.x || ny!=w->frame.y){
+                w->frame.x=nx; w->frame.y=ny; w->invalid_all=true;
+            }
         }
     } else if (e->type==3 && e->mouse.button==1 && e->mouse.state==0){
+        if (st->drag_arm){
+            /* это был просто клик по квадрату, без drag: разворачиваем фазу */
+            st->phase_bias += 0.5f; if (st->phase_bias>=1.0f) st->phase_bias-=1.0f;
+            w->invalid_all=true;
+            st->drag_arm = 0;
+        }
         w->drag.dragging=0;
     }
 }
@@ -80,7 +122,45 @@ static void destroy(Window *w){
     if (w && w->user) { free(w->user); w->user=NULL; }
 }
 
-static const WindowVTable V = { draw, on_event, tick, NULL, destroy };
+/* Приёмник DnD: принимаем только "application/x-square" */
+static void on_drag_enter(Window* w, const WMDrag* d){ (void)w; (void)d; }
+static void on_drag_leave(Window* w, const WMDrag* d){ (void)w; (void)d; }
+static void on_drag_over(Window* w, WMDrag* d, int lx, int ly){
+    (void)w; (void)lx; (void)ly;
+    if (d && d->mime && strcmp(d->mime, "application/x-square")==0){
+        d->effect = WM_DRAG_COPY; /* показываем, что примем */
+    } else {
+        d->effect = WM_DRAG_NONE;
+    }
+}
+static void on_drop(Window* w, WMDrag* d, int lx, int ly){
+    (void)lx; (void)ly;
+    if (!(d && d->mime && strcmp(d->mime, "application/x-square")==0)) return;
+    SquareState *st = (SquareState*)w->user;
+    /* перенимаем параметры источника */
+    if (d->size >= sizeof(SquarePayload)){
+        const SquarePayload* p = (const SquarePayload*)d->data;
+        st->colA = p->colA;
+        st->colB = p->colB;
+        st->period_ms = p->period_ms;
+        st->phase_bias = p->phase_bias;
+        st->start_ms = SDL_GetTicks();
+        w->invalid_all = true;
+    }
+    d->effect = WM_DRAG_COPY;
+}
+
+static const WindowVTable V = {
+    .draw = draw,
+    .on_event = on_event,
+    .tick = tick,
+    .on_focus = NULL,
+    .destroy = destroy,
+    .on_drag_enter = on_drag_enter,
+    .on_drag_over  = on_drag_over,
+    .on_drag_leave = on_drag_leave,
+    .on_drop       = on_drop
+};
 
 void win_square_init(Window *w, Rect frame, int z,
                      uint32_t colA, uint32_t colB, uint32_t period_ms, float phase){
