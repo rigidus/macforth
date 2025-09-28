@@ -224,7 +224,7 @@ wm_tick_animations(now) вызывает w->vt->tick для нужных око�
   + core/timing.h
   + <SDL.h> *(для SDL_GetTicks), <string.h>, <stdlib.h>
 
-* COMMENT Диаграмма зависимостей
+* Диаграмма зависимостей
 
 #+BEGIN_SRC plantuml
   @startuml
