@@ -63,7 +63,7 @@ else
 endif
 
 
-.PHONY: all run clean mac linux windows-mingw windows-msys web serve serve-py
+.PHONY: all run clean mac linux windows-mingw windows-msys wasm serve serve-py
 
 
 all: $(BIN)
@@ -115,10 +115,10 @@ WEB_FLAGS  := -O2 -sUSE_SDL=2 -sUSE_SDL_TTF=2 -sALLOW_MEMORY_GROWTH=1 -sASSERTIO
 # optional: WEB_FLAGS += -sUSE_FREETYPE=1
 
 
-web: $(WEB_OUT)
+wasm: $(WEB_OUT)
 
 
-$(WEB_OUT): $(WEB_SRCS) | $(WEB_DIR)
+$(WEB_OUT): $(WEB_SRCS) $(WEB_DIR)/.assets | $(WEB_DIR)
 	$(EMCC) $(CFLAGS) $(CPPFLAGS) $(WEB_SRCS) $(WEB_FLAGS) \
 	  --preload-file assets@/assets -o $(WEB_OUT)
 	@echo
@@ -137,11 +137,11 @@ $(WEB_DIR):
 	@mkdir -p $(WEB_DIR)
 
 
-serve: web
+serve: wasm
 	emrun --no_browser --port 8080 $(WEB_OUT)
 
 
-serve-py: web
+serve-py: wasm
 	cd $(WEB_DIR) && python3 -m http.server 8080
 
 

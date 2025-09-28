@@ -5,10 +5,12 @@
 #include <time.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdbool.h>
 #include <math.h>
 
 #define clampi(v,lo,hi) ((v)<(lo)?(lo):((v)>(hi)?(hi):(v)))
+#define ARRAY_LEN(a) ((int)(sizeof(a)/sizeof((a)[0])))
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
@@ -22,7 +24,6 @@ int asm_sum_output_size(void *win);
 /* тайминг */
 static inline uint32_t now_ms(void){ return SDL_GetTicks(); }
 #define FRAME_MS 16u /* ~60 Hz */
-
 
 void get_output_size(SDL_Window *win, int *out_w, int *out_h) {
     SDL_Surface *s = SDL_GetWindowSurface(win);
@@ -135,6 +136,7 @@ struct Window {
     void   (*draw)(Window* w, SDL_Rect area); /* перерисовать область окна в cache */
     void   (*on_event)(Window* w, const SDL_Event* e, int user_id, int local_x, int local_y);
     void   (*tick)(Window* w, uint32_t tnow); /* тик анимации/таймеров */
+    void   (*on_focus)(Window* w, int focused); /* опционально: уведомление о фокусе */
     DragState drag;
     uint32_t next_anim_ms;   /* ближайшее время тика анимации */
 };
@@ -142,6 +144,10 @@ struct Window {
 static Window* g_windows[MAX_WINDOWS]; static int g_win_count=0;
 static FocusEntry g_focus[4] = { {0,NULL} }; /* пока один пользователь: id=0 */
 
+/* prototype */
+static void init_window(Window* w,const char* name, SDL_Rect frame,int z,
+                        void(*draw)(Window*,SDL_Rect),
+                        void(*on_ev)(Window*,const SDL_Event*,int,int,int));
 
 /* Создать/пересоздать backbuffer ARGB8888 под размеры окна */
 static int ensure_backbuffer(int w, int h) {
@@ -372,6 +378,238 @@ static void on_event_window2(Window* w, const SDL_Event* e, int user_id, int lx,
     }
 }
 
+
+/* ========================= ОКНО-КОНСОЛЬ ========================= */
+#define CONSOLE_BUF_LINES   1024
+#define CONSOLE_MAX_LINE    4096
+
+typedef struct {
+    Window base;
+    /* метрики и сетка */
+    int cell_w, cell_h;
+    int cols, rows;
+    /* буфер строк (кольцевой) + редактируемая строка */
+    char *lines[CONSOLE_BUF_LINES];
+    int   line_len[CONSOLE_BUF_LINES];
+    int   head;      /* индекс самой старой строки */
+    int   count;     /* сколько строк хранится */
+    /* редактируемая строка */
+    char  edit[CONSOLE_MAX_LINE];
+    int   edit_len;
+    int   cursor_col;
+    /* курсор/мигание */
+    bool  blink_on;
+    uint32_t next_blink_ms;
+    /* цвета */
+    uint32_t col_fg;
+    uint32_t col_bg;
+    /* глиф-кэш (ASCII 0..255) */
+    SDL_Surface* glyph_cache[256];
+} ConsoleWindow;
+
+static void console_free_lines(ConsoleWindow* cw){
+    for (int i=0;i<ARRAY_LEN(cw->lines);++i) { if (cw->lines[i]) { free(cw->lines[i]); cw->lines[i]=NULL; } cw->line_len[i]=0; }
+    cw->head=0; cw->count=0;
+}
+
+static void console_measure(ConsoleWindow* cw){
+    int wM=0, hM=0;
+    TTF_SizeUTF8(g_font, "M", &wM, &hM);
+    cw->cell_w = (wM>0? wM:8);
+    cw->cell_h = TTF_FontHeight(g_font);
+    if (cw->cell_h<=0) cw->cell_h = 16;
+    cw->cols = cw->base.frame.w / cw->cell_w;
+    cw->rows = cw->base.frame.h / cw->cell_h;
+    if (cw->cols<1) cw->cols=1;
+    if (cw->rows<1) cw->rows=1;
+}
+
+static void console_dirty_line(ConsoleWindow* cw, int row){
+    if (row<0 || row>=cw->rows) return;
+    SDL_Rect r = { cw->base.frame.x, cw->base.frame.y + row*cw->cell_h, cw->cols*cw->cell_w, cw->cell_h };
+    window_invalidate((Window*)cw, r);
+}
+static void console_scroll_up_1(ConsoleWindow* cw){
+    /* логический скролл: сдвигаем head; визуально сдвигаем cache вверх на cell_h */
+    cw->head = (cw->head + 1) % CONSOLE_BUF_LINES;
+    if (cw->count < CONSOLE_BUF_LINES) cw->count++;
+    /* визуальный сдвиг: копирование в кэше окна */
+    SDL_Surface* s = cw->base.cache;
+    SDL_Rect src = { 0, cw->cell_h, s->w, s->h - cw->cell_h };
+    SDL_Rect dst = { 0, 0, s->w, s->h - cw->cell_h };
+    if (src.h > 0) SDL_BlitSurface(s, &src, s, &dst);
+    /* грязним последнюю строку (она станет пустой) */
+    console_dirty_line(cw, cw->rows-1);
+}
+static void console_commit_line(ConsoleWindow* cw){
+    /* сохранить edit в конец (head+count), продвинуть скролл если нужно */
+    int idx = (cw->head + cw->count) % CONSOLE_BUF_LINES;
+    if (cw->lines[idx]) { free(cw->lines[idx]); cw->lines[idx]=NULL; }
+    cw->lines[idx] = (char*)malloc((size_t)cw->edit_len+1);
+    if (cw->lines[idx]){
+        memcpy(cw->lines[idx], cw->edit, (size_t)cw->edit_len);
+        cw->lines[idx][cw->edit_len] = 0;
+        cw->line_len[idx] = cw->edit_len;
+        if (cw->count < CONSOLE_BUF_LINES) cw->count++;
+        else cw->head = (cw->head+1) % CONSOLE_BUF_LINES;
+    }
+    cw->edit_len = 0;
+    cw->edit[0] = 0;
+    cw->cursor_col = 0;
+    /* если строк стало больше rows, логический верх уедет — визуально сдвинем cache */
+    /* простая стратегия: если «видимый хвост» уходит, делаем scroll_up_1 и грязним всё */
+    /* Но мы уже ведём cache copy-scroll посрочно: вызовем scroll_up_1, если достигнут низ при рендере */
+}
+static void console_put_text(ConsoleWindow* cw, const char* utf8){
+    /* упрощение: считаем, что в SDL_TEXTINPUT приходит <=32 байт, помещаем в edit, wrap по cols */
+    while (*utf8){
+        unsigned char c = (unsigned char)*utf8;
+        if (cw->edit_len < CONSOLE_MAX_LINE-1){
+            cw->edit[cw->edit_len++] = (char)c;
+            cw->edit[cw->edit_len] = 0;
+            cw->cursor_col++;
+            if (cw->cursor_col >= cw->cols){
+                /* hard wrap */
+                console_commit_line(cw);
+            }
+        }
+        utf8++;
+    }
+    /* грязним последнюю строку (где редактируем) */
+    console_dirty_line(cw, cw->rows-1);
+}
+
+static void console_backspace(ConsoleWindow* cw){
+    if (cw->edit_len<=0) return;
+    /* наивно: удаляем 1 байт UTF-8 (достаточно для ASCII) */
+    cw->edit[--cw->edit_len] = 0;
+    if (cw->cursor_col>0) cw->cursor_col--;
+    console_dirty_line(cw, cw->rows-1);
+}
+
+static SDL_Surface* console_glyph(ConsoleWindow* cw, unsigned ch){
+    if (ch < 256 && cw->glyph_cache[ch]) return cw->glyph_cache[ch];
+    char buf[5]={0,0,0,0,0};
+    if (ch < 0x80){ buf[0]=(char)ch; }
+    else { /* упрощение: ограничимся ASCII для кэша; остальное рендерим напрямую */
+        buf[0]='?';
+    }
+    SDL_Color col = { (Uint8)((cw->col_fg>>16)&0xFF), (Uint8)((cw->col_fg>>8)&0xFF), (Uint8)(cw->col_fg&0xFF), 255 };
+    SDL_Surface* g = TTF_RenderUTF8_Blended(g_font, buf, col);
+    if (g && (g->format->format != SDL_PIXELFORMAT_ARGB8888)){
+        SDL_Surface* conv = SDL_ConvertSurfaceFormat(g, SDL_PIXELFORMAT_ARGB8888, 0);
+        SDL_FreeSurface(g);
+        g = conv;
+    }
+    if (ch < 256) cw->glyph_cache[ch] = g;
+    return g;
+}
+
+static void console_draw_line(ConsoleWindow* cw, int vis_row){
+    /* очистить фон строки */
+    SDL_Rect r = { 0, vis_row*cw->cell_h, cw->base.cache->w, cw->cell_h };
+    fill_rect32(cw->base.cache, r, cw->col_bg);
+    /* какая логическая строка будет на этом vis_row?
+       Простая модель: рисуем последние rows-1 строк из history и последнюю = edit */
+    int history_rows = cw->rows - 1;
+    int start = cw->count - history_rows; if (start<0) start=0;
+    int line_index = start + vis_row;
+    if (vis_row < history_rows){
+        /* строка из history */
+        if (line_index < cw->count){
+            int idx = (cw->head + line_index) % CONSOLE_BUF_LINES;
+            const char* s = cw->lines[idx] ? cw->lines[idx] : "";
+            int x=0;
+            for (const unsigned char* p=(const unsigned char*)s; *p && x<cw->cols; ++p, ++x){
+                SDL_Surface* g = console_glyph(cw, *p);
+                if (g){
+                    SDL_Rect dst = { x*cw->cell_w, vis_row*cw->cell_h + (cw->cell_h - g->h), g->w, g->h };
+                    SDL_BlitSurface(g, NULL, cw->base.cache, &dst);
+                }
+            }
+        }
+    } else {
+        /* последняя видимая строка — это edit */
+        int x=0;
+        for (int i=0;i<cw->edit_len && x<cw->cols;i++,x++){
+            unsigned ch = (unsigned char)cw->edit[i];
+            SDL_Surface* g = console_glyph(cw, ch);
+            if (g){
+                SDL_Rect dst = { x*cw->cell_w, vis_row*cw->cell_h + (cw->cell_h - g->h), g->w, g->h };
+                SDL_BlitSurface(g, NULL, cw->base.cache, &dst);
+            }
+        }
+        /* курсор */
+        if (cw->blink_on){
+            SDL_Rect caret = { cw->cursor_col*cw->cell_w, vis_row*cw->cell_h, 2, cw->cell_h };
+            fill_rect32(cw->base.cache, caret, cw->col_fg);
+        }
+    }
+}
+
+static void console_draw(Window* w, SDL_Rect area){
+    (void)area;
+    ConsoleWindow* cw = (ConsoleWindow*)w;
+    /* полная перерисовка: все видимые строки */
+    for (int r=0;r<cw->rows;r++) console_draw_line(cw, r);
+    w->invalid_all = false;
+}
+
+static void console_tick(Window* w, uint32_t tnow){
+    ConsoleWindow* cw = (ConsoleWindow*)w;
+    if (tnow >= cw->next_blink_ms){
+        cw->blink_on = !cw->blink_on;
+        cw->next_blink_ms = tnow + 500;
+        /* грязним только строку курсора (последнюю видимую) */
+        console_dirty_line(cw, cw->rows-1);
+    }
+    /* планируем следующий кадр через FRAME_MS, а invalid/damage уже поставили */
+    w->next_anim_ms = tnow + FRAME_MS;
+}
+
+static void console_on_event(Window* w, const SDL_Event* e, int user_id, int lx, int ly){
+    (void)user_id; (void)lx; (void)ly;
+    ConsoleWindow* cw = (ConsoleWindow*)w;
+    if (e->type == SDL_TEXTINPUT){
+        console_put_text(cw, e->text.text);
+    } else if (e->type == SDL_KEYDOWN){
+        SDL_Keycode kc = e->key.keysym.sym;
+        if (kc == SDLK_BACKSPACE){
+            console_backspace(cw);
+        } else if (kc == SDLK_RETURN || kc == SDLK_KP_ENTER){
+            console_commit_line(cw);
+            /* грязним всё окно — но можно только нижнюю часть */
+            window_invalidate(w, w->frame);
+        } else if (kc == SDLK_HOME){
+            cw->cursor_col = 0; console_dirty_line(cw, cw->rows-1);
+        } else if (kc == SDLK_END){
+            cw->cursor_col = cw->edit_len; if (cw->cursor_col>cw->cols) cw->cursor_col=cw->cols;
+            console_dirty_line(cw, cw->rows-1);
+        }
+    }
+}
+
+static void console_on_focus(Window* w, int focused){
+    if (focused){
+        SDL_StartTextInput();
+    } else {
+        SDL_StopTextInput();
+    }
+}
+
+static void init_console(ConsoleWindow* cw, SDL_Rect frame, int z){
+    memset(cw,0,sizeof(*cw));
+    init_window((Window*)cw, "console", frame, z, console_draw, console_on_event);
+    ((Window*)cw)->tick      = console_tick;
+    ((Window*)cw)->on_focus  = console_on_focus;
+    cw->col_bg = 0xFF000000; cw->col_fg = 0xFFFFFFFF;
+    console_measure(cw);
+    /* подготовить кэш окна под сетку (уже создан в init_window) — зальём фоном */
+    if (((Window*)cw)->cache) fill_surface32(((Window*)cw)->cache, cw->col_bg);
+    cw->blink_on = true; cw->next_blink_ms = now_ms() + 500;
+}
+
+
 /* фабрики окон */
 static void init_window(Window* w,const char* name, SDL_Rect frame, int z, void(*draw)(Window*,SDL_Rect), void(*on_ev)(Window*,const SDL_Event*,int,int,int)){
     memset(w,0,sizeof(*w));
@@ -383,7 +621,14 @@ static void init_window(Window* w,const char* name, SDL_Rect frame, int z, void(
     if (w->cache) fill_surface32(w->cache, g_col_bg);
 }
 
-
+/* C11-переносимая замена strdup (POSIX) */
+static char* xstrdup(const char* s){
+    if (!s) return NULL;
+    size_t n = strlen(s) + 1;
+    char* p = (char*)malloc(n);
+    if (p) memcpy(p, s, n);
+    return p;
+}
 
 /* создать surface с текстом (RGBA8), вызывающий должен SDL_FreeSurface */
 static SDL_Surface* text_to_surface(const char *utf8, uint32_t rgba)
@@ -419,6 +664,10 @@ static void draw_text(int x, int y, const char *utf8, uint32_t argb)
     SDL_BlitSurface(conv, NULL, g_back, &dst);
     SDL_FreeSurface(conv);
 }
+
+
+
+
 
 /* ======================= Композиция и показ ======================= */
 static void compose_and_present_if_due(){
@@ -471,9 +720,7 @@ static void compose_and_present_if_due(){
 
 static void sdl_tick(void) {
     SDL_Event e;
-    bool had_events = false;
     while (SDL_PollEvent(&e)) {
-        had_events = true;
         switch (e.type) {
         case SDL_QUIT: 
             g_running = 0; 
@@ -481,14 +728,31 @@ static void sdl_tick(void) {
             emscripten_cancel_main_loop();
 #endif
             break;
-        case SDL_KEYDOWN:
+        case SDL_KEYDOWN: {
+            /* Глобальная обработка */
             if (e.key.keysym.sym == SDLK_ESCAPE) {
                 g_running = 0;
 #ifdef __EMSCRIPTEN__
                 emscripten_cancel_main_loop();
 #endif
+                break;
             }
-            break;
+            /* Отправляем KEYDOWN в текущее сфокусированное окно */
+            int uid = 0;
+            Window* target = g_focus[uid].focused;
+            if (target && target->on_event) {
+                /* Для клавиатуры локальные координаты не важны */
+                target->on_event(target, &e, uid, 0, 0);
+            }
+        } break;
+        case SDL_TEXTINPUT: {
+            /* Текстовый ввод всегда идёт в сфокусированное окно */
+            int uid = 0;
+            Window* target = g_focus[uid].focused;
+            if (target && target->on_event) {
+                target->on_event(target, &e, uid, 0, 0);
+            }
+        } break;
         case SDL_MOUSEBUTTONDOWN:
         case SDL_MOUSEBUTTONUP:
         case SDL_MOUSEMOTION:
@@ -501,15 +765,13 @@ static void sdl_tick(void) {
             Window* top = wm_topmost_at(mx,my);
             if (e.type==SDL_MOUSEBUTTONDOWN && e.button.button==SDL_BUTTON_LEFT){
                 /* поменять фокус пользователя на top (или на NULL, если клик по пустому месту) */
-                if (top){
-                    /* поднять на передний план окно, которое получило фокус */
-                    wm_bring_to_front(top);
-                }
+                if (top) { wm_bring_to_front(top); }
                 g_focus[uid].user_id = uid;
-                g_focus[uid].focused = top;
-                /* если кликнули по пустому месту — можно снять фокус */
-                if (!top){
-                    /* опционально: damage всего экрана не нужен, стек не менялся */
+                if (g_focus[uid].focused != top){
+                    if (g_focus[uid].focused && g_focus[uid].focused->on_focus)
+                        g_focus[uid].focused->on_focus(g_focus[uid].focused, 0);
+                    g_focus[uid].focused = top;
+                    if (top && top->on_focus) top->on_focus(top, 1);
                 }
             }
             /* маршрутизация ввода: только в сфокусированное для этого пользователя окно */
@@ -654,6 +916,24 @@ int main(int argc, char **argv) {
     win3.phase_bias = 0.25f;                /* стартуем с фазовым сдвигом */
     ((Window*)&win3)->tick = tick_window2;
     wm_add_window((Window*)&win3);
+
+    /* окно_4: консоль поверх остальных */
+    static ConsoleWindow wnd4;
+    int cW = g_surf->w - 40;
+    int cH = g_surf->h/3;
+    int cx = 20, cy = g_surf->h - cH - 20;
+    init_console(&wnd4, (SDL_Rect){cx,cy,cW,cH}, 100);
+    wm_add_window((Window*)&wnd4);
+
+    /* приветственная строка */
+    const char* hello = "console ready. type here...";
+    /* эмулируем ввод приветствия как уже «буферизированных» строк */
+    strncpy(wnd4.edit, "", sizeof(wnd4.edit)-1);
+    wnd4.edit_len = 0; wnd4.cursor_col = 0;
+    /* добавим две строки истории */
+    wnd4.lines[0] = xstrdup(hello); wnd4.line_len[0] = (int)strlen(hello);
+    wnd4.lines[1] = xstrdup("press Enter to commit line"); wnd4.line_len[1] = (int)strlen("press Enter to commit line");
+    wnd4.count = 2; wnd4.head = 0;
     
     wm_sort_by_z();
 
@@ -665,6 +945,8 @@ int main(int argc, char **argv) {
     /* включим плавную анимацию цвета для обоих окон */
     ((Window*)&win2)->animating    = true; ((Window*)&win2)->next_anim_ms = now_ms();
     ((Window*)&win3)->animating    = true; ((Window*)&win3)->next_anim_ms = now_ms();
+    
+    ((Window*)&wnd4)->animating    = true; ((Window*)&wnd4)->next_anim_ms = now_ms();
 
 #ifndef __EMSCRIPTEN__
     int sum = asm_sum_output_size(win);
@@ -693,6 +975,10 @@ int main(int argc, char **argv) {
     if (g_back) { SDL_FreeSurface(g_back); g_back = NULL; }
 
     SDL_DestroyWindow(g_win);
+
+    /* очистка ресурсов консоли */
+    console_free_lines(&wnd4);
+    for (int i=0;i<256;i++) if (wnd4.glyph_cache[i]) SDL_FreeSurface(wnd4.glyph_cache[i]);
 
     if (g_font) { TTF_CloseFont(g_font); g_font = NULL; }
     TTF_Quit();
