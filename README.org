@@ -156,9 +156,154 @@ wm_tick_animations(now) вызывает w->vt->tick для нужных око�
 - Завершение:
   + wm_destroy (вызовет destroy у окон и освободит их кэши) → text_shutdown → plat_destroy.
 
-** Общее
+** Общее и чистота
 
 - Все модули видят только свои заголовки (window.h, wm.h, surface.h, text.h).
 - SDL-детали заперты в platform/ и gfx/.
 - Окна — изолированы: они не знают про SDL и ядро, только про Window, Rect, InputEvent, Surface.
 - Менять/добавлять окна можно, не трогая платформу/ядро.
+- apps/* не тянут platform/* и не включают SDL-типы.
+- core/* не знает про SDL_Window/SDL_Event — только свои абстракции (InputEvent, Rect, Surface*).
+- platform/* — единственное место, где живут SDL_Window, события SDL и копирование в окно.
+- gfx/* — единственный слой, знающий про SDL_Surface/SDL_ttf; наружу отдаёт Surface*.
+
+** Зависимости
+
+** Карта модулей (крупно)
+
+- apps/* → core/window.h, core/wm.h, gfx/surface.h, gfx/text.h
+- core/* → (внутри core) window.h, wm.h, damage.h, input.h, timing.h + иногда gfx/surface.h
+- platform/platform_sdl.* → core/wm.h, core/input.h, core/timing.h, gfx/surface.h + SDL
+- gfx/surface.* → SDL (Surface-утилиты)
+- gfx/text.* → SDL_ttf (+ SDL), возвращает Surface* (gfx/surface.h)
+- main.c → всё публичное: platform/platform_sdl.h, core/wm.h, core/window.h, apps/*, gfx/text.h
+
+** Пофайлово (точно)
+
+- main.c
+  + platform/platform_sdl.h
+  + core/wm.h, core/window.h
+  + apps/win_paint.h, apps/win_square.h, apps/win_console.h
+  + gfx/text.h
+- src/platform/platform_sdl.c
+  + platform/platform_sdl.h (собственный заголовок)
+  + core/wm.h, core/input.h, core/timing.h
+  + gfx/surface.h
+  + <SDL.h> (и косвенно SDL_ttf через text в рантайме, но прямо не включает)
+- src/core/wm.c
+  + core/wm.h
+  + gfx/surface.h (для освобождения кэшей окон)
+- src/core/input.c
+  + core/input.h, core/wm.h
+- src/core/window.c
+  + core/window.h
+  + gfx/surface.h (создание/заливка кэша окна)
+- src/core/damage.c
+  + core/damage.h (inline-реализация в .h)
+- src/core/timing.h
+  + без внешних зависимостей
+- src/gfx/surface.c
+  + gfx/surface.h
+  + <SDL.h>
+- src/gfx/text.c
+  + gfx/text.h
+  + <SDL_ttf.h>, <SDL.h>
+  + gfx/surface.h (создаёт Surface из SDL_Surface)
+- src/apps/win_paint.c
+  + apps/win_paint.h
+  + gfx/surface.h
+  + core/wm.h (для invalidate, Rect)
+- src/apps/win_square.c
+  + apps/win_square.h
+  + gfx/surface.h
+  + core/wm.h, core/timing.h
+  + <math.h>
+- src/apps/win_console.c
+  + apps/win_console.h
+  + gfx/surface.h, gfx/text.h
+  + core/timing.h
+  + <SDL.h> *(для SDL_GetTicks), <string.h>, <stdlib.h>
+
+* COMMENT Диаграмма зависимостей
+
+#+BEGIN_SRC plantuml
+  @startuml
+  title Dependency graph – Cross WM
+
+  skinparam packageStyle rectangle
+  skinparam ArrowColor #888
+  skinparam packageTitleFontColor #333
+  skinparam defaultTextAlignment left
+
+  package "main" as main {
+      [main.c]
+  }
+
+  package "platform" as platform {
+      [platform_sdl.h]
+      [platform_sdl.c]
+  }
+
+  package "core" as core {
+      [window.h]
+      [window.c]
+      [wm.h]
+      [wm.c]
+      [damage.h]
+      [damage.c]
+      [input.h]
+      [input.c]
+      [timing.h]
+  }
+
+  package "gfx" as gfx {
+      [surface.h]
+      [surface.c]
+      [text.h]
+      [text.c]
+  }
+
+  package "apps" as apps {
+      [win_paint.h]
+      [win_paint.c]
+      [win_square.h]
+      [win_square.c]
+      [win_console.h]
+      [win_console.c]
+  }
+
+  package "3rd-party" as thirdparty {
+      [SDL2]
+      [SDL2_ttf]
+  }
+
+  ' ---- Dependencies ----
+  main --> platform
+  main --> core
+  main --> apps
+  main --> gfx
+
+  platform --> core
+  platform --> gfx
+  platform --> [SDL2]
+
+  core --> gfx
+
+  apps --> core
+  apps --> gfx
+
+  gfx --> [SDL2]
+  gfx --> [SDL2_ttf]
+
+  legend right
+      Arrows show "uses public API of".
+      core never includes SDL types.
+      apps know only Window/WM/Input and gfx::Surface/Text.
+      platform is the only module touching SDL_Window & event loop.
+      gfx wraps SDL_Surface/SDL_ttf and exposes Surface/Text API.
+  endlegend
+
+  @enduml
+
+
+#+END_SRC
