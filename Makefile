@@ -154,11 +154,18 @@ $(BIN): $(DIRS_TO_CREATE) $(OBJ)
 # ======= Компиляция .c → build/...o с автозависимостями =======
 # unity: генерим объединённый файл, чтобы сохранялись пути включений
 ifeq ($(UNITY),1)
-$(UNITY_FILE): | $(BUILD_DIR)/
+  UNITY_FILE := $(BUILD_DIR)/unity_all.c
+  SRC_C      := $(UNITY_FILE)
+  OBJ        := $(BUILD_DIR)/unity_all.o
+$(UNITY_FILE): $(SRC_CORE) $(SRC_GFX) $(SRC_APPS) $(SRC_PLAT) $(SRC_MAIN) | $(BUILD_DIR)/
 	@echo "/* автогенерируемый unity build */" > $@
 	@echo "#include <stdio.h>" >> $@
 	@$(foreach F,$(filter-out $(UNITY_FILE),$(SRC_CORE) $(SRC_GFX) $(SRC_APPS) $(SRC_PLAT) $(SRC_MAIN)), \
-	  echo "#include \"$(F)\"";) >> $@
+		echo "#include \"../$(F)\"" >> $@;)
+
+# Спец-правило компиляции именно этого файла (обходит паттерн %.o: %.c)
+$(BUILD_DIR)/unity_all.o: $(UNITY_FILE)
+	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
 endif
 
 # Обычный .c

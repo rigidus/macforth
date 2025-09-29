@@ -97,7 +97,7 @@ static void on_event(Window *w, void* wm_ptr, const InputEvent *e, int lx, int l
                 wm_start_drag(wm, e->user_id, w, "application/x-square",
                               &st->drag_payload, sizeof(st->drag_payload),
                               prev, surface_w(prev)/2, surface_h(prev)/2);
-                /* примечание: prev не освободим здесь — платформа рисует overlay; освобождение можно добавить в wm_end_drag при необходимости */
+                /* примечание: prev не освободим здесь — платформа рисует overlay; освобождение в wm_end_drag */
                 st->drag_arm = 0;
             }
         } else if (w->drag.dragging){

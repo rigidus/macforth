@@ -1,7 +1,6 @@
 #include "wm.h"
 #include "../gfx/surface.h"
 #include <stdlib.h>
-#include <stdlib.h>
 #include <string.h>
 
 static int point_in_rect(int x,int y, Rect r){
