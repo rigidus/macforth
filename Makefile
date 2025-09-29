@@ -149,7 +149,7 @@ all: $(BIN)
 $(BIN): $(DIRS_TO_CREATE) $(OBJ)
 	@echo "CFLAGS: $(CFLAGS) $(SDL2_CFLAGS) $(TTF_CFLAGS)"
 	@echo "LIBS  : $(SDL2_LIBS) $(TTF_LIBS)"
-	$(Q)$(CC) $(OBJ) -o $@ $(LDFLAGS) $(SDL2_LIBS) $(TTF_LIBS)
+	$(Q)$(CC) $(OBJ) -o $@ $(LDFLAGS) $(SDL2_LIBS) $(TTF_LIBS) -lm
 
 # ======= Компиляция .c → build/...o с автозависимостями =======
 # unity: генерим объединённый файл, чтобы сохранялись пути включений
