@@ -1,6 +1,7 @@
 #include "console/store.h"
 #include "console/widget.h"
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
 /* ===== Внутренние типы ===== */
@@ -74,6 +75,17 @@ static void notify(ConsoleStore* st){
     }
 }
 
+/* ---- Параметры «свёртки хвоста» ----
+   Оставляем не меньше CON_SNAPSHOT_KEEP_LAST последних записей,
+   и сворачиваем пачкой не меньше CON_SNAPSHOT_MIN_DROP строк.
+   Виджеты не удаляем. */
+#ifndef CON_SNAPSHOT_KEEP_LAST
+#  define CON_SNAPSHOT_KEEP_LAST 256
+#endif
+#ifndef CON_SNAPSHOT_MIN_DROP
+#  define CON_SNAPSHOT_MIN_DROP  64
+#endif
+
 /* portable qsort (без qsort_r): компаратор читает глобальный указатель */
 static const ConsoleStore* g_sort_store = NULL;
 static int cmp_order_by_pos_id(const void* a, const void* b){
@@ -98,6 +110,47 @@ static void rebuild_order(ConsoleStore* st){
     g_sort_store = NULL;
     st->order_valid = 1;
 }
+
+/* ===== Компактация хвоста (M11) =====
+   Удаляем самые старые TEXT-строки (но не WIDGET), пока не останется минимум keep_last.
+   Если удалили достаточно (>= min_drop), добавляем в конец строку-заглушку. */
+static void maybe_compact_tail(ConsoleStore* st){
+    if (!st) return;
+    /* буфер ещё не под давлением — выходим */
+    if (st->count < CON_BUF_LINES - 2) return;
+
+    int drop = 0;
+    /* удаляем с головы только TEXT, пока не достигнем keep_last */
+    while (st->count > CON_SNAPSHOT_KEEP_LAST){
+        ConEntry* head = &st->entries[st->head];
+        /* если на голове виджет — не тянем дальше (сохраняем интерактив) */
+        if (head->type == CON_ENTRY_WIDGET) break;
+        /* TEXT — можно удалить */
+        free_entry(head);
+        st->head = (st->head + 1) % CON_BUF_LINES;
+        st->count--;
+        drop++;
+    }
+    if (drop >= CON_SNAPSHOT_MIN_DROP){
+        char line[96];
+        /* без локали/плюралов — просто число */
+        snprintf(line, sizeof(line), "(... %d older lines compacted ...)", drop);
+        /* Важно: внутренний append без notify/rebuild — мы сами вызовем notify() у вызывающих */
+        int idx = (st->head + st->count) % CON_BUF_LINES;
+        free_entry(&st->entries[idx]);
+        st->entries[idx].type = CON_ENTRY_TEXT;
+        st->entries[idx].id   = st->next_id++;
+        st->entries[idx].pos  = st->last_pos = next_pos_after(st);
+        size_t n = strlen(line);
+        st->entries[idx].as.text.s = (char*)malloc(n+1);
+        if (st->entries[idx].as.text.s){
+            memcpy(st->entries[idx].as.text.s, line, n+1);
+            st->entries[idx].as.text.len = (int)n;
+            if (st->count < CON_BUF_LINES) st->count++; else st->head = (st->head + 1) % CON_BUF_LINES;
+        }
+    }
+}
+
 
 /* ===== Конструктор/деструктор ===== */
 ConsoleStore* con_store_create(void){
@@ -197,6 +250,7 @@ static void append_line_internal(ConsoleStore* st, const char* s){
         if (st->count < CON_BUF_LINES) st->count++;
         else st->head = (st->head + 1) % CON_BUF_LINES;
     }
+    /* компактацию не вызываем здесь, чтобы избежать рекурсии */
 }
 
 static ConItemId append_widget_internal(ConsoleStore* st, ConsoleWidget* w){
@@ -210,6 +264,7 @@ static ConItemId append_widget_internal(ConsoleStore* st, ConsoleWidget* w){
     ConItemId id = st->entries[idx].id;
     if (st->count < CON_BUF_LINES) st->count++;
     else st->head = (st->head + 1) % CON_BUF_LINES;
+    /* компактацию не вызываем здесь, чтобы избежать рекурсии */
     return id;
 }
 
@@ -229,6 +284,7 @@ void con_store_put_text(ConsoleStore* st, const char* utf8){
 void con_store_append_line(ConsoleStore* st, const char* s){
     if (!st) return;
     append_line_internal(st, s);
+    maybe_compact_tail(st);
     notify(st);
 }
 
@@ -236,11 +292,13 @@ ConItemId con_store_append_widget(ConsoleStore* st, ConsoleWidget* w){
     if (!st) return CON_ITEMID_INVALID;
     ConItemId id = append_widget_internal(st, w);
     notify(st);
+    maybe_compact_tail(st);
     return id;
 }
 
 void con_store_notify_changed(ConsoleStore* st){
     if (!st) return;
+    /* компактация по явному notify не нужна — вызовы идут при внутренних изменениях */
     notify(st);
 }
 
@@ -255,6 +313,7 @@ void con_store_backspace(ConsoleStore* st){
 void con_store_commit(ConsoleStore* st){
     if (!st) return;
     commit_line(st);
+    maybe_compact_tail(st);
     notify(st);
 }
 

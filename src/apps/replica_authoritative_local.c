@@ -2,6 +2,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Репликатор поддерживает только одного «слушателя» */
+
+/* Сейчас у Replicator один callback. Если позже понадобится несколько подписчиков (несколько вью/нод), лучше сделать список слушателей.  */
+
 struct Replicator {
     ReplicatorConfirmCb cb;
     void* user;
@@ -28,5 +32,21 @@ void replicator_set_confirm_listener(Replicator* r, ReplicatorConfirmCb cb, void
 }
 
 void replicator_publish(Replicator* r, const ConOp* op){
-    loop_publish(r, op);
+    /* Сейчас ConOp.data часто указывает на стековые буферы
+       (например, в con_sink_commit() и submit_text()).
+       Это работает потому, что loopback-репликатор подтверждает
+       синхронно.
+       Как только появится асинхронная репликация - use-after-free.
+       Поэтому документируем, что replicator_publish()
+       всегда копирует payload (malloc/free внутри репликатора),
+    */
+    if (!r || !op) return;
+    ConOp tmp = *op;
+    void* copy = NULL;
+    if (op->data && op->size){
+        copy = malloc(op->size);
+        if (copy){ memcpy(copy, op->data, op->size); tmp.data = copy; }
+    }
+    loop_publish(r, &tmp);
+    free(copy);
 }

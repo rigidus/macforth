@@ -3,6 +3,7 @@
 #include "../gfx/text.h"
 #include "../core/drag.h"
 #include "../core/timing.h"
+#include "../core/wm.h"
 #include <SDL.h>
 #include <string.h>
 #include <stdlib.h>
@@ -36,6 +37,16 @@ typedef struct {
     /* цвета */
     uint32_t col_bg;
     uint32_t col_fg;
+
+    /* построчная «грязь» для частичного перерисовывания (до 64 строк) */
+    uint64_t dirty_rows_mask; /* бит i => строка i требует перерисовки */
+    /* прим.: если строк >64, fallback: dirty_rows_mask==0 => полный redraw */
+
+    /* DnD-источник для текстовых строк истории */
+    int   drag_arm;         /* 1 — «вооружён» стартовать DnD после порога */
+    int   drag_start_mx;    /* экранные координаты press для порога */
+    int   drag_start_my;
+    int   drag_src_index;   /* индекс строки истории под курсором при press */
 } ConsoleViewState;
 
 /* ---------- utils ---------- */
@@ -94,6 +105,7 @@ static void console_on_frame_changed(Window* w, int old_w, int old_h){
     if (st->cursor_col > elen) st->cursor_col = elen;
     /* */
     w->invalid_all = true;
+    st->dirty_rows_mask = 0; /* смена размера — проще перерисовать всё */
 }
 
 static void console_dirty_line(Window* w, ConsoleViewState* st, int vis_row){
@@ -101,6 +113,12 @@ static void console_dirty_line(Window* w, ConsoleViewState* st, int vis_row){
     Rect r = rect_make(w->frame.x, w->frame.y + vis_row*st->cell_h,
                        st->cols*st->cell_w, st->cell_h);
     window_invalidate(w, r);
+    /* отметим строку как «грязную» для частичного redraw */
+    if (vis_row < 64){
+        st->dirty_rows_mask |= (1ull << (uint64_t)vis_row);
+    } else {
+        st->dirty_rows_mask = 0; /* слишком много строк — редравим всё */
+    }
 }
 
 
@@ -114,40 +132,61 @@ static void draw_line_text(Surface *dst, int x, int y, const char *s, uint32_t a
     surface_free(glyph);
 }
 
+/* helper для частичного редрава: отрисовать одну строку истории */
+static void s_draw_history_row(Window* w, ConsoleViewState* st, const HistoryLayout* L,
+                               int row, int baseline_off){
+    if (!w || !st || !L) return;
+    if (row < 0 || row >= L->history_rows) return;
+    int idx = L->start_index + row;
+    if (idx < 0 || idx >= con_store_count(st->store)) return;
+    int y = row * st->cell_h;
+    /* затираем фон полосы строки */
+    surface_fill_rect(w->cache, 0, y, st->cols*st->cell_w, st->cell_h, st->col_bg);
+    ConsoleWidget* cw = con_store_get_widget(st->store, idx);
+    if (cw && cw->draw){
+        cw->draw(cw, w->cache, 0, y, st->cols*st->cell_w, st->cell_h, st->col_fg);
+    } else {
+        const char *s = con_store_get_line(st->store, idx);
+        if (!s) s = "";
+        draw_line_text(w->cache, 0, y + baseline_off, s, st->col_fg);
+    }
+}
+
+
 static void console_draw(Window *w, const Rect *area){
     (void)area;
     ConsoleViewState *st = (ConsoleViewState*)w->user;
     int baseline_off = st->cell_h - st->glyph_h;
 
     /* очистить окно */
-    surface_fill(w->cache, st->col_bg);
+    if (st->dirty_rows_mask == 0){
+        /* полный кадр */
+        surface_fill(w->cache, st->col_bg);
+    }
 
     HistoryLayout L = layout_compute(st);
     int vis_row = 0;
 
-    /* рисуем историю (текст или виджеты построчно) */
-    for (; vis_row < L.history_rows; ++vis_row){
-        int idx = L.start_index + vis_row;
-        if (idx >= con_store_count(st->store)) break;
-        ConsoleWidget* cw = con_store_get_widget(st->store, idx);
-        if (cw){
-            /* виджет занимает всю строку (Entry=WIDGET) */
-            /* (тип можно запросить через con_store_get_type при необходимости разветвления) */
-            int y = vis_row * st->cell_h;
-            if (cw->draw){
-                cw->draw(cw, w->cache, 0, y, st->cols*st->cell_w, st->cell_h, st->col_fg);
-            }
-        } else {
-            /* текстовая строка */
-            const char *s = con_store_get_line(st->store, idx);
-            if (!s) s = "";
-            draw_line_text(w->cache, 0, vis_row * st->cell_h + baseline_off, s, st->col_fg);
+
+    if (st->dirty_rows_mask == 0){
+        /* обычный путь: рисуем все видимые строки истории */
+        for (; vis_row < L.history_rows; ++vis_row){
+            s_draw_history_row(w, st, &L, vis_row, baseline_off);
+        }
+    } else {
+        /* частичная перерисовка: только грязные строки истории */
+        uint64_t m = st->dirty_rows_mask;
+        for (int row = 0; row < L.history_rows && m; ++row){
+            if (m & 1ull){ s_draw_history_row(w, st, &L, row, baseline_off); }
+            m >>= 1ull;
         }
     }
 
     /* рисуем редактируемую строку (последняя) */
     int edit_y = vis_row * st->cell_h;
-    {
+    if (st->dirty_rows_mask == 0){
+        /* перерисовываем как обычно весь edit-ряд */
+        surface_fill_rect(w->cache, 0, edit_y, st->cols*st->cell_w, st->cell_h, st->col_bg);
         char eb[CON_MAX_LINE]; eb[0]=0;
         int elen = con_store_get_edit(st->store, eb, sizeof(eb));
         if (elen > 0){
@@ -158,9 +197,50 @@ static void console_draw(Window *w, const Rect *area){
             int cx = st->cursor_col * st->cell_w;
             surface_fill_rect(w->cache, cx, edit_y, 2, st->cell_h, st->col_fg);
         }
+    } else {
+        /* перерисовываем edit-ряд только если он помечен грязным */
+        int need = (st->rows-1 < 64) ? ((st->dirty_rows_mask >> (st->rows-1)) & 1ull) : 1;
+        if (need){
+            surface_fill_rect(w->cache, 0, edit_y, st->cols*st->cell_w, st->cell_h, st->col_bg);
+            char eb[CON_MAX_LINE]; eb[0]=0;
+            int elen = con_store_get_edit(st->store, eb, sizeof(eb));
+            if (elen > 0){
+                draw_line_text(w->cache, 0, edit_y + baseline_off, eb, st->col_fg);
+            }
+            if (st->blink_on){
+                int cx = st->cursor_col * st->cell_w;
+                surface_fill_rect(w->cache, cx, edit_y, 2, st->cell_h, st->col_fg);
+            }
+        }
     }
-
     w->invalid_all = false;
+    st->dirty_rows_mask = 0; /* сбрасываем частичную «грязь» */
+}
+
+/* M10: маленькое превью для перетаскиваемой команды */
+static Surface* make_cmd_preview(const char* s){
+    if (!s) return NULL;
+    int tw=0, th=0;
+    if (text_measure_utf8(s, &tw, &th) != 0){ tw=120; th=16; }
+    /* ограничим ширину превью, чтобы не занимало весь экран */
+    const int PAD = 8;
+    const int MAX_W = 260;
+    int gw = tw, gh = th;
+    int pw = gw + PAD*2; if (pw > MAX_W) pw = MAX_W;
+    int ph = gh + PAD*2;
+    Surface* prev = surface_create_argb(pw, ph);
+    if (!prev) return NULL;
+    /* фон + рамка */
+    surface_fill(prev, 0xAA000000);
+    surface_fill_rect(prev, 1,1, pw-2, ph-2, 0xFF202020);
+    /* сам текст (усечём по ширине) */
+    Surface* glyph = text_render_utf8(s, 0xFFFFFFFF);
+    if (glyph){
+        int blit_w = surface_w(glyph); if (blit_w > pw - PAD*2) blit_w = pw - PAD*2;
+        surface_blit(glyph, 0,0, blit_w, surface_h(glyph), prev, PAD, PAD);
+        surface_free(glyph);
+    }
+    return prev;
 }
 
 /* --- destroy: освобождаем буферы истории --- */
@@ -183,6 +263,7 @@ static void console_tick(Window *w, uint32_t now){
         st->next_blink_ms = now + 500;
         /* грязним только строку курсора */
         console_dirty_line(w, st, st->rows - 1);
+        /* mask уже проставлен в console_dirty_line */
     }
     w->next_anim_ms = next_frame(now);
 }
@@ -217,19 +298,16 @@ static void console_on_event(Window *w, void* wm, const InputEvent *e, int lx, i
                     con_store_notify_changed(st->store);
                     /* Эмиссия дельты: сериализуем текущее состояние виджета и отправляем через Sink.
                        дельта имеет нормализованный заголовок (LWW, commutative). */
+                    /* Эмиссия дельты: отправляем ТОЛЬКО нормализованный пакет "cw.delta" (LWW, commutative). */
                     ConItemId wid = con_store_get_id(st->store, idx);
                     if (wid != CON_ITEMID_INVALID && st->sink){
-                        char blob[32];
-                        size_t blen = sizeof(blob);
-                        const char* tag = "set"; /* унификация протокола: полный снимок состояния */
-                        if (cw->get_state_blob && cw->get_state_blob(cw, blob, &blen) && blen>0){
-                            con_sink_widget_delta(st->sink, e->user_id, wid, tag, blob, blen);
+                        if (cw->get_state_blob){
                             struct {
                                 ConDeltaHdr h;
                                 int v;
                             } pkt;
                             size_t slen = sizeof(int);
-                            if (cw->get_state_blob && cw->get_state_blob(cw, &pkt.v, &slen) && slen==sizeof(int)){
+                            if (cw->get_state_blob(cw, &pkt.v, &slen) && slen==sizeof(int)){
                                 pkt.h.schema   = CON_DELTA_SCHEMA_V1;
                                 pkt.h.kind     = CON_DELTA_KIND_LWW_SET;
                                 pkt.h.flags    = 0;
@@ -243,12 +321,65 @@ static void console_on_event(Window *w, void* wm, const InputEvent *e, int lx, i
                         /* как раньше — локальное уведомление (на случай отсутствия sink) */
                         con_store_notify_changed(st->store);
                     }
+                    console_dirty_line(w, st, ly / st->cell_h); /* строка с виджетом */
                     Rect r = rect_make(w->frame.x, w->frame.y + cell_y, st->cols*st->cell_w, st->cell_h);
                     window_invalidate(w, r);
                     w->invalid_all = true;
                 }
             }
             return; /* событие «съедено» виджетом */
+        }
+    }
+
+    /* DnD-источник для текстовых строк истории */
+    if (e->type==3){ /* mouse button */
+        if (e->mouse.button==1 && e->mouse.state==1){
+            /* press — проверим, попали ли по текстовой строке истории */
+            int cell_x=0, cell_y=0;
+            int idx = layout_hit_item(st, lx, ly, &cell_x, &cell_y);
+            if (idx >= 0){
+                /* не стартуем drag для строк-виджетов */
+                ConsoleWidget* cw = con_store_get_widget(st->store, idx);
+                if (!cw){
+                    st->drag_arm = 1;
+                    st->drag_start_mx = e->mouse.x;
+                    st->drag_start_my = e->mouse.y;
+                    st->drag_src_index = idx;
+                }
+            }
+        } else if (e->mouse.button==1 && e->mouse.state==0){
+            /* отпускание — если не стартовали dnd, просто сбросить arm */
+            st->drag_arm = 0;
+            st->drag_src_index = -1;
+        }
+    } else if (e->type==4 && (e->mouse.buttons & 1)){
+        if (st->drag_arm){
+            int dx = e->mouse.x - st->drag_start_mx;
+            int dy = e->mouse.y - st->drag_start_my;
+            if (dx*dx + dy*dy >= 9){ /* порог ~3px */
+                /* извлечём текст команды и запустим DnD */
+                int idx = st->drag_src_index;
+                const char* line = NULL;
+                size_t line_len = 0;
+                if (idx >= 0 && idx < con_store_count(st->store)){
+                    line = con_store_get_line(st->store, idx);
+                    line_len = (size_t)con_store_get_line_len(st->store, idx);
+                }
+                if (line && line_len > 0){
+                    Surface* prev = make_cmd_preview(line);
+                    /* горячая точка — небольшой отступ, чтобы палец/курсор не закрывал текст */
+                    int hot = 6;
+                    wm_start_drag((WM*)wm, e->user_id, w,
+                                  MIME_CMD_TEXT,
+                                  (void*)line, line_len,
+                                  prev, hot, hot);
+                    /* примечание: prev освободится на wm_end_drag() */
+                }
+                st->drag_arm = 0;
+                st->drag_src_index = -1;
+                /* дальше событие будет обрабатываться протоколом DnD в input_route_mouse */
+                return;
+            }
         }
     }
 
@@ -262,6 +393,7 @@ static void console_on_event(Window *w, void* wm, const InputEvent *e, int lx, i
             if (st->cursor_col >= st->cols){
                 /* мягкий перенос строки: коммитим только в Store, без вызова процессора */
                 con_store_commit(st->store);
+                /* после смещения истории перерисуем всю видимую область */
                 st->cursor_col = 0;
             }
         }
@@ -289,6 +421,8 @@ static void console_on_event(Window *w, void* wm, const InputEvent *e, int lx, i
         }
     }
 }
+
+
 
 /* ---------- vtable и init ---------- */
 
@@ -378,6 +512,7 @@ void win_console_init(Window *w, Rect frame, int z, ConsoleStore* store, Console
 
     st->blink_on = true;
     st->next_blink_ms = SDL_GetTicks() + 500;
+    st->dirty_rows_mask = 0;
 
     w->user = st;
     w->animating = true;

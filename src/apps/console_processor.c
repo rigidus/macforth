@@ -71,7 +71,7 @@ void con_processor_on_command(ConsoleProcessor* p, const char* line){
     if (*s==0) return;
 
     if (starts_with(s, "help")){
-        reply(p, "commands: help | echo <text> | time");
+        reply(p, "commands: help | echo <text> | time | color | widgets | color set <id> <0..255>");
         return;
     }
     if (starts_with(s, "echo")){
