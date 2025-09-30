@@ -11,9 +11,6 @@ extern "C" {
     typedef uint64_t ConsoleId; /* идентификатор консоли/ленты */
 
     typedef enum {
-        CON_OP_PUT_TEXT     = 1,
-        CON_OP_BACKSPACE    = 2,
-        CON_OP_COMMIT       = 3, /* перенос edit в историю; payload: UTF-8 строки (опц.) */
         CON_OP_APPEND_LINE  = 4, /* добавить готовую строку; payload: UTF-8 */
         CON_OP_WIDGET_MSG   = 5,
         CON_OP_WIDGET_DELTA = 6,

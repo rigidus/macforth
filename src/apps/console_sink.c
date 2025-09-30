@@ -99,31 +99,6 @@ static void on_confirm(void* user, const ConOp* op){
     applied_add(s, op->op_id);
     /* чужое — применяем к Store идемпотентно по типу */
     switch (op->type){
-    case CON_OP_PUT_TEXT:
-        if (op->data && op->size>0){
-            /* data может быть без \0 */
-            char tmp[CON_MAX_LINE];
-            size_t n = op->size; if (n >= sizeof(tmp)) n = sizeof(tmp)-1;
-            memcpy(tmp, op->data, n); tmp[n]=0;
-            con_store_put_text(s->store, tmp);
-        }
-        break;
-    case CON_OP_BACKSPACE:
-        con_store_backspace(s->store);
-        break;
-    case CON_OP_COMMIT:
-        if (op->data && op->size>0){
-            char line[CON_MAX_LINE];
-            size_t n = op->size; if (n >= sizeof(line)) n = sizeof(line)-1;
-            memcpy(line, op->data, n); line[n]=0;
-            /* Удалённый коммит: просто добавим строку и выполним процессор */
-            con_store_append_line(s->store, line);
-            if (s->proc) con_processor_on_command(s->proc, line);
-        } else {
-            /* пустой коммит — приведём к стандартному переносу */
-            con_store_commit(s->store);
-        }
-        break;
     case CON_OP_APPEND_LINE:
         if (op->data && op->size>0){
             char line2[CON_MAX_LINE];
@@ -193,66 +168,7 @@ void con_sink_destroy(ConsoleSink* s){
     free(s);
 }
 
-void con_sink_submit_text(ConsoleSink* s, int user_id, const char* utf8){
-    (void)user_id;
-    if (!s || !utf8) return;
-    /* локальная спекуляция — только у слушателя */
-    if (s->is_listener) con_store_put_text(s->store, utf8);
-    /* публикация */
-    if (s->repl){
-        ConOp op = {0};
-        op.op_id   = ((uint64_t)s->actor_id<<32) | (s->next_op_id++);
-        op.hlc     = con_sink_tick_hlc(s, SDL_GetTicks());
-        op.actor_id= s->actor_id;
-        op.console_id = s->console_id;
-        op.user_id = user_id;
-        op.type = CON_OP_PUT_TEXT;
-        op.data = utf8; op.size = strlen(utf8);
-        pending_add(s, op.op_id);
-        replicator_publish(s->repl, &op);
-    }
-}
 
-void con_sink_backspace(ConsoleSink* s, int user_id){
-    (void)user_id;
-    if (!s) return;
-    if (s->is_listener) con_store_backspace(s->store);
-    if (s->repl){
-        ConOp op = {0};
-        op.op_id   = ((uint64_t)s->actor_id<<32) | (s->next_op_id++);
-        op.hlc     = con_sink_tick_hlc(s, SDL_GetTicks());
-        op.actor_id= s->actor_id;
-        op.console_id = s->console_id;
-        op.user_id = user_id;
-        op.type = CON_OP_BACKSPACE;
-        pending_add(s, op.op_id);
-        replicator_publish(s->repl, &op);
-    }
-}
-
-void con_sink_commit(ConsoleSink* s, int user_id){
-    (void)user_id;
-    if (!s) return;
-    char cmd[CON_MAX_LINE]; int n = con_store_get_edit(s->store, cmd, sizeof(cmd));
-    /* локальная спекуляция — только у слушателя */
-    if (s->is_listener){
-        con_store_commit(s->store);
-        if (n > 0 && s->proc){ con_processor_on_command(s->proc, cmd); }
-    }
-    /* публикация подтверждаемой операции */
-    if (s->repl){
-        ConOp op = {0};
-        op.op_id   = ((uint64_t)s->actor_id<<32) | (s->next_op_id++);
-        op.hlc     = con_sink_tick_hlc(s, SDL_GetTicks());
-        op.actor_id= s->actor_id;
-        op.console_id = s->console_id;
-        op.user_id = user_id;
-        op.type = CON_OP_COMMIT;
-        op.data = (n>0)? cmd: NULL; op.size = (n>0)? (size_t)n : 0;
-        pending_add(s, op.op_id);
-        replicator_publish(s->repl, &op);
-    }
-}
 
 
 /* ===== CRDT вставки (текст/виджеты) ===== */

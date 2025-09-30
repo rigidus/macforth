@@ -80,9 +80,6 @@ struct ConsoleStore {
     int       head;
     int       count;
 
-    char  edit[CON_MAX_LINE];
-    int   edit_len;
-
     struct SubEntry subs[8];
     int subs_n;
 
@@ -228,7 +225,6 @@ ConsoleStore* con_store_create(void){
     ConsoleStore* st = (ConsoleStore*)calloc(1, sizeof(ConsoleStore));
     if (!st) return NULL;
     st->head = 0; st->count = 0;
-    st->edit_len = 0; st->edit[0]=0;
     st->subs_n = 0;
     st->next_id = 1;
     st->order_valid = 0;
@@ -287,25 +283,6 @@ void con_store_subscribe(ConsoleStore* st, ConsoleStoreListener cb, void* user){
     }
 }
 
-/* ===== Внутренние «append/commit» без notify ===== */
-static void commit_line(ConsoleStore* st){
-    int idx = (st->head + st->count) % CON_BUF_LINES;
-    free_entry(&st->entries[idx]);
-    st->entries[idx].type = CON_ENTRY_TEXT;
-    st->entries[idx].id   = st->next_id++;
-    /* по умолчанию — в конец: between(last,0) */
-    st->entries[idx].pos  = con_store_gen_between(st, con_store_last_id(st), CON_ITEMID_INVALID, 0);
-    st->entries[idx].as.text.s = (char*)malloc((size_t)st->edit_len + 1);
-    if (st->entries[idx].as.text.s){
-        memcpy(st->entries[idx].as.text.s, st->edit, (size_t)st->edit_len);
-        st->entries[idx].as.text.s[st->edit_len]=0;
-        st->entries[idx].as.text.len = st->edit_len;
-        if (st->count < CON_BUF_LINES) st->count++;
-        else st->head = (st->head + 1) % CON_BUF_LINES;
-    }
-    st->edit_len=0; st->edit[0]=0;
-}
-
 static void append_line_internal(ConsoleStore* st, const char* s){
     if (!s) return;
     int idx = (st->head + st->count) % CON_BUF_LINES;
@@ -340,19 +317,6 @@ static ConItemId append_widget_internal(ConsoleStore* st, ConsoleWidget* w){
     return id;
 }
 
-/* ===== Публичный API ===== */
-void con_store_put_text(ConsoleStore* st, const char* utf8){
-    if (!st || !utf8) return;
-    while (*utf8){
-        unsigned char c = (unsigned char)*utf8++;
-        if (st->edit_len < CON_MAX_LINE-1){
-            st->edit[st->edit_len++] = (char)c;
-            st->edit[st->edit_len] = 0;
-        }
-    }
-    notify(st);
-}
-
 void con_store_append_line(ConsoleStore* st, const char* s){
     if (!st) return;
     append_line_internal(st, s);
@@ -374,20 +338,6 @@ void con_store_notify_changed(ConsoleStore* st){
     notify(st);
 }
 
-void con_store_backspace(ConsoleStore* st){
-    if (!st) return;
-    if (st->edit_len > 0){
-        st->edit[--st->edit_len] = 0;
-        notify(st);
-    }
-}
-
-void con_store_commit(ConsoleStore* st){
-    if (!st) return;
-    commit_line(st);
-    maybe_compact_tail(st);
-    notify(st);
-}
 
 int con_store_count(const ConsoleStore* st){
     return st ? st->count : 0;
@@ -411,15 +361,6 @@ int con_store_get_line_len(const ConsoleStore* st, int index){
     const ConEntry* e = &st->entries[phys];
     if (e->type != CON_ENTRY_TEXT) return 0;
     return e->as.text.len;
-}
-
-int con_store_get_edit(const ConsoleStore* st, char* out, int cap){
-    if (!st || !out || cap<=0) return 0;
-    int n = st->edit_len;
-    if (n > cap-1) n = cap-1;
-    memcpy(out, st->edit, (size_t)n);
-    out[n]=0;
-    return n;
 }
 
 ConsoleWidget* con_store_get_widget(const ConsoleStore* st, int index){

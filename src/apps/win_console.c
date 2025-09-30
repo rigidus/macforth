@@ -23,12 +23,7 @@ typedef struct {
     int cell_w, cell_h;
     int cols, rows;
 
-    /* курсор/мигание */
-    bool  blink_on;
-    uint32_t next_blink_ms;
-
     int   glyph_h;   /* высота строки для выравнивания по базовой линии */
-    int   cursor_col; /* позиция курсора в текущей вью (рисование) */
 
     ConsoleStore* store;
     ConsoleSink*  sink;
@@ -61,18 +56,19 @@ static void console_measure(ConsoleViewState *st, int win_w, int win_h){
     st->glyph_h = st->cell_h;
 
     st->cols = win_w / st->cell_w;  if (st->cols<1) st->cols=1;
-    st->rows = win_h / st->cell_h;  if (st->rows<2) st->rows=2; // минимум: 1 история + 1 edit
+    st->rows = win_h / st->cell_h;  if (st->rows<1) st->rows=1; // минимум: 1 строка истории
+
 }
 
 /* ---- helpers: отображение истории и hit-test ---- */
 typedef struct {
     int start_index;    /* первый индекс в Store, который попадает в видимую историю */
-    int history_rows;   /* сколько строк истории (без edit) помещается */
+    int history_rows;   /* сколько строк истории помещается (вся высота окна) */
 } HistoryLayout;
 
 static HistoryLayout layout_compute(ConsoleViewState* st){
     HistoryLayout L={0};
-    L.history_rows = st->rows - 1; if (L.history_rows < 0) L.history_rows = 0;
+    L.history_rows = st->rows; if (L.history_rows < 0) L.history_rows = 0;
     int total = con_store_count(st->store);
     int start = total - L.history_rows; if (start < 0) start = 0;
     L.start_index = start;
@@ -86,7 +82,6 @@ static int layout_hit_item(ConsoleViewState* st, int lx, int ly, int* out_cell_x
     HistoryLayout L = layout_compute(st);
     int row = ly / st->cell_h;
     if (row < 0 || row >= st->rows) return -1;
-    if (row == st->rows - 1) return -1; /* это edit-строка */
     if (row >= L.history_rows) return -1;
     if (out_cell_x) *out_cell_x = 0;
     if (out_cell_y) *out_cell_y = row * st->cell_h;
@@ -98,12 +93,6 @@ static void console_on_frame_changed(Window* w, int old_w, int old_h){
     (void)old_w; (void)old_h;
     ConsoleViewState *st = (ConsoleViewState*)w->user;
     console_measure(st, surface_w(w->cache), surface_h(w->cache));
-    /* ограничим курсор по новым колонкам */
-    if (st->cursor_col > st->cols) st->cursor_col = st->cols;
-    /* clamp к длине edit в Store */
-    char tmp[CON_MAX_LINE]; int elen = con_store_get_edit(st->store, tmp, sizeof(tmp));
-    if (st->cursor_col > elen) st->cursor_col = elen;
-    /* */
     w->invalid_all = true;
     st->dirty_rows_mask = 0; /* смена размера — проще перерисовать всё */
 }
@@ -182,42 +171,11 @@ static void console_draw(Window *w, const Rect *area){
         }
     }
 
-    /* рисуем редактируемую строку (последняя) */
-    int edit_y = vis_row * st->cell_h;
-    if (st->dirty_rows_mask == 0){
-        /* перерисовываем как обычно весь edit-ряд */
-        surface_fill_rect(w->cache, 0, edit_y, st->cols*st->cell_w, st->cell_h, st->col_bg);
-        char eb[CON_MAX_LINE]; eb[0]=0;
-        int elen = con_store_get_edit(st->store, eb, sizeof(eb));
-        if (elen > 0){
-            draw_line_text(w->cache, 0, edit_y + baseline_off, eb, st->col_fg);
-        }
-        /* курсор */
-        if (st->blink_on){
-            int cx = st->cursor_col * st->cell_w;
-            surface_fill_rect(w->cache, cx, edit_y, 2, st->cell_h, st->col_fg);
-        }
-    } else {
-        /* перерисовываем edit-ряд только если он помечен грязным */
-        int need = (st->rows-1 < 64) ? ((st->dirty_rows_mask >> (st->rows-1)) & 1ull) : 1;
-        if (need){
-            surface_fill_rect(w->cache, 0, edit_y, st->cols*st->cell_w, st->cell_h, st->col_bg);
-            char eb[CON_MAX_LINE]; eb[0]=0;
-            int elen = con_store_get_edit(st->store, eb, sizeof(eb));
-            if (elen > 0){
-                draw_line_text(w->cache, 0, edit_y + baseline_off, eb, st->col_fg);
-            }
-            if (st->blink_on){
-                int cx = st->cursor_col * st->cell_w;
-                surface_fill_rect(w->cache, cx, edit_y, 2, st->cell_h, st->col_fg);
-            }
-        }
-    }
     w->invalid_all = false;
     st->dirty_rows_mask = 0; /* сбрасываем частичную «грязь» */
 }
 
-/* M10: маленькое превью для перетаскиваемой команды */
+/* маленькое превью для перетаскиваемой команды */
 static Surface* make_cmd_preview(const char* s){
     if (!s) return NULL;
     int tw=0, th=0;
@@ -257,15 +215,10 @@ static void console_destroy(Window *w){
 /* ---------- тик анимации (мигание курсора) ---------- */
 
 static void console_tick(Window *w, uint32_t now){
-    ConsoleViewState *st = (ConsoleViewState*)w->user;
-    if (now >= st->next_blink_ms){
-        st->blink_on = !st->blink_on;
-        st->next_blink_ms = now + 500;
-        /* грязним только строку курсора */
-        console_dirty_line(w, st, st->rows - 1);
-        /* mask уже проставлен в console_dirty_line */
-    }
-    w->next_anim_ms = next_frame(now);
+    (void)now; (void)w;
+
+    /* виджетам всё ещё могут требоваться тики через свою анимацию; окно перерисуется по notify() */
+
 }
 
 /* уведомление от Store: помечаем окно к перерисовке */
@@ -382,44 +335,6 @@ static void console_on_event(Window *w, void* wm, const InputEvent *e, int lx, i
             }
         }
     }
-
-    if (e->type == 2){ /* TEXTINPUT */
-        /* Повторяем старую семантику wrap по колонкам во View */
-        const char *p = e->text.text;
-        while (*p){
-            char buf[2] = { *p++, 0 };
-            con_sink_submit_text(st->sink, e->user_id, buf);
-            st->cursor_col++;
-            if (st->cursor_col >= st->cols){
-                /* мягкий перенос строки: коммитим только в Store, без вызова процессора */
-                con_store_commit(st->store);
-                /* после смещения истории перерисуем всю видимую область */
-                st->cursor_col = 0;
-            }
-        }
-        console_dirty_line(w, st, st->rows-1);
-        w->invalid_all = true;
-    } else if (e->type == 1){ /* KEYDOWN */
-        int sym = e->key.sym;
-        if (sym == SDLK_BACKSPACE){
-            con_sink_backspace(st->sink, e->user_id);
-            if (st->cursor_col>0) st->cursor_col--;
-            console_dirty_line(w, st, st->rows-1);
-            w->invalid_all = true;
-        } else if (sym == SDLK_RETURN || sym == SDLK_KP_ENTER){
-            con_sink_commit(st->sink, e->user_id); /* Enter: отправка в процессор */
-            st->cursor_col = 0;
-            /* перерисовать весь видимый блок (история сдвинулась) */
-            w->invalid_all = true;
-        } else if (sym == SDLK_HOME){
-            st->cursor_col = 0; console_dirty_line(w, st, st->rows-1); w->invalid_all = true;
-        } else if (sym == SDLK_END){
-            char tmp[CON_MAX_LINE]; int elen = con_store_get_edit(st->store, tmp, sizeof(tmp));
-            st->cursor_col = elen;
-            if (st->cursor_col > st->cols) st->cursor_col = st->cols;
-            console_dirty_line(w, st, st->rows-1); w->invalid_all = true;
-        }
-    }
 }
 
 
@@ -506,12 +421,9 @@ void win_console_init(Window *w, Rect frame, int z, ConsoleStore* store, Console
     /* подписка на изменения Store — чтобы вторая вьюха увидела обновления */
     con_store_subscribe(store, on_store_changed, w);
 
-    st->blink_on = true;
-    st->next_blink_ms = SDL_GetTicks() + 500;
     st->dirty_rows_mask = 0;
 
     w->user = st;
-    w->animating = true;
-    w->next_anim_ms = SDL_GetTicks();
+    w->animating = false;
     w->invalid_all = true;
 }
