@@ -3,9 +3,14 @@
 #include <string.h>
 #include "console/sink.h"
 #include "console/replicator.h"
+#include <SDL.h>
 
 #ifndef CON_SINK_PENDING_MAX
 #define CON_SINK_PENDING_MAX 128
+#endif
+
+#ifndef CON_SINK_APPLIED_MAX
+#define CON_SINK_APPLIED_MAX 512
 #endif
 
 struct ConsoleSink {
@@ -13,10 +18,15 @@ struct ConsoleSink {
     ConsoleProcessor* proc;
     Replicator* repl;
     uint64_t next_op_id;
+    uint32_t actor_id;
+    uint64_t last_hlc;
     int is_listener;
     /* Небольшой набор ожидающих подтверждения op_id для идемпотентности */
     uint64_t pending[CON_SINK_PENDING_MAX];
     int pending_n;
+    /* Идемпотентность на уровне приёмника: уже применённые op_id */
+    uint64_t applied[CON_SINK_APPLIED_MAX];
+    int applied_n;
 };
 
 static int pending_has(ConsoleSink* s, uint64_t id){
@@ -41,15 +51,47 @@ static void pending_del(ConsoleSink* s, uint64_t id){
     }
 }
 
+static int applied_has(ConsoleSink* s, uint64_t id){
+    for (int i=0;i<s->applied_n;i++) if (s->applied[i]==id) return 1;
+    return 0;
+}
+static void applied_add(ConsoleSink* s, uint64_t id){
+    if (s->applied_n < CON_SINK_APPLIED_MAX) s->applied[s->applied_n++] = id;
+    else {
+        memmove(s->applied, s->applied+1, (CON_SINK_APPLIED_MAX-1)*sizeof(uint64_t));
+        s->applied[CON_SINK_APPLIED_MAX-1] = id;
+    }
+}
+
+/* ---- HLC helpers ---- */
+uint32_t con_sink_get_actor_id(ConsoleSink* s){ return s ? s->actor_id : 0; }
+uint64_t con_sink_tick_hlc(ConsoleSink* s, uint64_t now_ms){
+    if (!s) return 0;
+    /* простой гибрид: физическое время, склеенное с логическим хвостом (одно число).
+       Гарантируем монотонность: если now_ms <= last_hlc, двигаем логический компонент (+1). */
+    uint64_t now = now_ms;
+    uint64_t last = s->last_hlc;
+    uint64_t next = (now > last) ? now : (last + 1);
+    s->last_hlc = next;
+    return next;
+}
+
+
 /* Применение подтверждённой операции (если это не наша спекуляция) */
 static void on_confirm(void* user, const ConOp* op){
     ConsoleSink* s = (ConsoleSink*)user;
     if (!s || !op) return;
+    /* дубликаты от сети (или эхо) — игнорировать по op_id */
+    if (applied_has(s, op->op_id)){
+        return;
+    }
     if (pending_has(s, op->op_id)){
         /* наше — уже применено спекулятивно */
         pending_del(s, op->op_id);
+        applied_add(s, op->op_id);
         return;
     }
+    applied_add(s, op->op_id);
     /* чужое — применяем к Store идемпотентно по типу */
     switch (op->type){
     case CON_OP_PUT_TEXT:
@@ -103,7 +145,11 @@ ConsoleSink* con_sink_create(ConsoleStore* store, ConsoleProcessor* proc, Replic
     s->proc  = proc;
     s->repl  = repl;
     s->next_op_id = 1;
+    /* простой actor_id: смесь адреса и стартового времени */
+    s->actor_id = (uint32_t)((uintptr_t)s ^ (uintptr_t)SDL_GetTicks());
+    s->last_hlc = SDL_GetTicks();
     s->pending_n = 0;
+    s->applied_n = 0;
     s->is_listener = is_listener ? 1 : 0;
     if (repl && s->is_listener){
         replicator_set_confirm_listener(repl, on_confirm, s);
@@ -124,7 +170,9 @@ void con_sink_submit_text(ConsoleSink* s, int user_id, const char* utf8){
     /* публикация */
     if (s->repl){
         ConOp op = {0};
-        op.op_id = s->next_op_id++;
+        op.op_id   = ((uint64_t)s->actor_id<<32) | (s->next_op_id++);
+        op.hlc     = con_sink_tick_hlc(s, SDL_GetTicks());
+        op.actor_id= s->actor_id;
         op.user_id = user_id;
         op.type = CON_OP_PUT_TEXT;
         op.data = utf8; op.size = strlen(utf8);
@@ -139,7 +187,9 @@ void con_sink_backspace(ConsoleSink* s, int user_id){
     if (s->is_listener) con_store_backspace(s->store);
     if (s->repl){
         ConOp op = {0};
-        op.op_id = s->next_op_id++;
+        op.op_id   = ((uint64_t)s->actor_id<<32) | (s->next_op_id++);
+        op.hlc     = con_sink_tick_hlc(s, SDL_GetTicks());
+        op.actor_id= s->actor_id;
         op.user_id = user_id;
         op.type = CON_OP_BACKSPACE;
         pending_add(s, op.op_id);
@@ -159,7 +209,9 @@ void con_sink_commit(ConsoleSink* s, int user_id){
     /* публикация подтверждаемой операции */
     if (s->repl){
         ConOp op = {0};
-        op.op_id = s->next_op_id++;
+        op.op_id   = ((uint64_t)s->actor_id<<32) | (s->next_op_id++);
+        op.hlc     = con_sink_tick_hlc(s, SDL_GetTicks());
+        op.actor_id= s->actor_id;
         op.user_id = user_id;
         op.type = CON_OP_COMMIT;
         op.data = (n>0)? cmd: NULL; op.size = (n>0)? (size_t)n : 0;
@@ -178,7 +230,9 @@ void con_sink_widget_message(ConsoleSink* s, int user_id,
     /* и публикация */
     if (s->repl){
         ConOp op = {0};
-        op.op_id = s->next_op_id++;
+        op.op_id   = ((uint64_t)s->actor_id<<32) | (s->next_op_id++);
+        op.hlc     = con_sink_tick_hlc(s, SDL_GetTicks());
+        op.actor_id= s->actor_id;
         op.user_id = user_id;
         op.type = CON_OP_WIDGET_MSG;
         op.widget_id = id;
@@ -199,7 +253,9 @@ void con_sink_widget_delta(ConsoleSink* s, int user_id,
     /* публикация */
     if (s->repl){
         ConOp op = {0};
-        op.op_id = s->next_op_id++;
+        op.op_id   = ((uint64_t)s->actor_id<<32) | (s->next_op_id++);
+        op.hlc     = con_sink_tick_hlc(s, SDL_GetTicks());
+        op.actor_id= s->actor_id;
         op.user_id = user_id;
         op.type = CON_OP_WIDGET_DELTA;
         op.widget_id = id;
@@ -221,7 +277,9 @@ void con_sink_commit_text_command(ConsoleSink* s, int user_id, const char* utf8_
     /* публикуем как APPEND_LINE */
     if (s->repl){
         ConOp op = {0};
-        op.op_id = s->next_op_id++;
+        op.op_id   = ((uint64_t)s->actor_id<<32) | (s->next_op_id++);
+        op.hlc     = con_sink_tick_hlc(s, SDL_GetTicks());
+        op.actor_id= s->actor_id;
         op.user_id = user_id;
         op.type = CON_OP_APPEND_LINE;
         op.data = utf8_line; op.size = strlen(utf8_line);

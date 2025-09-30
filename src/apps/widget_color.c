@@ -1,6 +1,7 @@
 #include "apps/widget_color.h"
 #include "gfx/text.h"
 #include "apps/global_state.h"
+#include "console/delta.h"
 #include <stdlib.h>
 #include <string.h>
 #include <SDL.h>
@@ -9,6 +10,9 @@ typedef struct {
     ConsoleWidget base;
     int value;     /* 0..255 (красный канал) */
     int dragging;  /* 0/1 */
+    /* версия состояния (для LWW-дельт): сравнение по (hlc, actor) */
+    uint64_t ver_hlc;
+    uint32_t ver_actor;
 } ColorSlider;
 
 static int color_get_state_blob(ConsoleWidget* self, void* out, size_t* inout_size);
@@ -66,7 +70,29 @@ static int color_on_message(ConsoleWidget* self, const char* tag, const void* da
     ColorSlider* cs = (ColorSlider*)self;
     if (!tag) return 0;
     int old = cs->value;
-    if (strcmp(tag, "set")==0 && data && size>=sizeof(int)){
+    /* --- Новый нормализованный путь: tag="cw.delta", payload: {ConDeltaHdr, int} --- */
+    if (strcmp(tag, "cw.delta")==0 && data && size >= (int)(sizeof(ConDeltaHdr)+sizeof(int))){
+        const ConDeltaHdr* h = (const ConDeltaHdr*)data;
+        if (h->schema == CON_DELTA_SCHEMA_V1 && h->kind == CON_DELTA_KIND_LWW_SET){
+            int v;
+            memcpy(&v, (const uint8_t*)data + sizeof(ConDeltaHdr), sizeof(int));
+            /* LWW: примем только если (hlc,actor) новее текущего */
+            int newer = (h->hlc > cs->ver_hlc) ||
+                (h->hlc == cs->ver_hlc && h->actor_id > cs->ver_actor);
+            if (newer){
+                cs->value = clampi(v, 0, 255);
+                cs->ver_hlc   = h->hlc;
+                cs->ver_actor = h->actor_id;
+            } else {
+                /* старую/повторную дельту игнорируем — коммутативность/идемпотентность */
+                return 0;
+            }
+        } else {
+            return 0;
+        }
+    }
+    /* --- Назадсовместимо: старые сообщения без версии --- */
+    else if (strcmp(tag, "set")==0 && data && size>=sizeof(int)){
         int v = *(const int*)data;
         cs->value = clampi(v, 0, 255);
     } else if (strcmp(tag, "delta")==0 && data && size>=sizeof(int)){
@@ -131,6 +157,8 @@ ConsoleWidget* widget_color_create(uint8_t initial_r0_255){
     ColorSlider* cs = (ColorSlider*)calloc(1, sizeof(ColorSlider));
     if (!cs) return NULL;
     cs->value = initial_r0_255;
+    cs->ver_hlc = 0;
+    cs->ver_actor = 0;
     cs->base.draw     = color_draw;
     cs->base.on_event = color_on_event;
     cs->base.on_message = color_on_message;

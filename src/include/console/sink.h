@@ -34,6 +34,12 @@ extern "C" {
     /* Инъекция готовой командной строки: добавить в историю как TEXT и отработать процессором. */
     void con_sink_commit_text_command(ConsoleSink*, int user_id, const char* utf8_line);
 
+    /* ---- HLC/actor helpers (для штамповки дельт виджетов) ---- */
+    /* Уникальный идентификатор актора (узла) этого sink’а. */
+    uint32_t con_sink_get_actor_id(ConsoleSink*);
+    /* Тик локального HLC: вернёт монотонно-неубывающий «время-логический» штамп. */
+    uint64_t con_sink_tick_hlc(ConsoleSink*, uint64_t now_ms);
+
 #ifdef __cplusplus
 }
 #endif

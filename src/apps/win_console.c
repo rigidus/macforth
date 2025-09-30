@@ -13,6 +13,7 @@
 #include "console/widget.h"
 #include "apps/widget_color.h"
 #include "apps/win_square.h" /* для SquarePayload из DnD */
+#include "console/delta.h"
 
 #define MIME_CMD_TEXT "application/x-console-cmd-text"
 
@@ -215,7 +216,7 @@ static void console_on_event(Window *w, void* wm, const InputEvent *e, int lx, i
                     /* Виджет изменился — перерисовать строку и уведомить всех слушателей Store */
                     con_store_notify_changed(st->store);
                     /* Эмиссия дельты: сериализуем текущее состояние виджета и отправляем через Sink.
-                       В loopback оно же применится локально (идемпотентно). */
+                       дельта имеет нормализованный заголовок (LWW, commutative). */
                     ConItemId wid = con_store_get_id(st->store, idx);
                     if (wid != CON_ITEMID_INVALID && st->sink){
                         char blob[32];
@@ -223,6 +224,20 @@ static void console_on_event(Window *w, void* wm, const InputEvent *e, int lx, i
                         const char* tag = "set"; /* унификация протокола: полный снимок состояния */
                         if (cw->get_state_blob && cw->get_state_blob(cw, blob, &blen) && blen>0){
                             con_sink_widget_delta(st->sink, e->user_id, wid, tag, blob, blen);
+                            struct {
+                                ConDeltaHdr h;
+                                int v;
+                            } pkt;
+                            size_t slen = sizeof(int);
+                            if (cw->get_state_blob && cw->get_state_blob(cw, &pkt.v, &slen) && slen==sizeof(int)){
+                                pkt.h.schema   = CON_DELTA_SCHEMA_V1;
+                                pkt.h.kind     = CON_DELTA_KIND_LWW_SET;
+                                pkt.h.flags    = 0;
+                                pkt.h.hlc      = con_sink_tick_hlc(st->sink, SDL_GetTicks());
+                                pkt.h.actor_id = con_sink_get_actor_id(st->sink);
+                                pkt.h.reserved = 0;
+                                con_sink_widget_delta(st->sink, e->user_id, wid, "cw.delta", &pkt, sizeof(pkt));
+                            }
                         }
                     } else {
                         /* как раньше — локальное уведомление (на случай отсутствия sink) */

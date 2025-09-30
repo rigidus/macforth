@@ -17,12 +17,14 @@ extern "C" {
     } ConOpType;
 
     typedef struct {
-        uint64_t   op_id;     /* для идемпотентности */
-        int        user_id;   /* источник (зарезервировано) */
+        uint64_t   op_id;      /* для идемпотентности (уникален в рамках узла, см. actor_id) */
+        uint64_t   hlc;        /* Hybrid Logical Clock (подготовка к CRDT/LWW) */
+        uint32_t   actor_id;   /* идентификатор эмитента (узла/актора) */
+        int        user_id;    /* источник (зарезервировано) */
         ConOpType  type;
-        ConItemId  widget_id; /* для widget_* */
-        const char* tag;      /* для widget_* */
-        const void* data;     /* произвольный payload (UTF-8 или blob) */
+        ConItemId  widget_id;  /* для widget_* */
+        const char* tag;       /* для widget_* */
+        const void* data;      /* произвольный payload (UTF-8 или blob) */
         size_t     size;
     } ConOp;
 
