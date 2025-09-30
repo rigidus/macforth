@@ -4,6 +4,7 @@
 #include "console/sink.h"
 #include "console/replicator.h"
 #include <SDL.h>
+#include "apps/widget_color.h"
 
 #ifndef CON_SINK_PENDING_MAX
 #define CON_SINK_PENDING_MAX 128
@@ -20,6 +21,7 @@ struct ConsoleSink {
     uint64_t next_op_id;
     uint32_t actor_id;
     uint64_t last_hlc;
+    uint32_t next_item_seq;
     int is_listener;
     /* Небольшой набор ожидающих подтверждения op_id для идемпотентности */
     uint64_t pending[CON_SINK_PENDING_MAX];
@@ -134,6 +136,30 @@ static void on_confirm(void* user, const ConOp* op){
             con_store_widget_message(s->store, op->widget_id, op->tag?op->tag:"", op->data, op->size);
         }
         break;
+    case CON_OP_INSERT_TEXT: {
+        if (op->new_item_id != CON_ITEMID_INVALID && op->data && op->size>0){
+            char line2[CON_MAX_LINE];
+            size_t n = op->size; if (n >= sizeof(line2)) n = sizeof(line2)-1;
+            memcpy(line2, op->data, n); line2[n]=0;
+            con_store_insert_text_at(s->store, op->new_item_id, &op->pos, line2);
+            if (s->proc) con_processor_on_command(s->proc, line2);
+        }
+        break;
+    }
+    case CON_OP_INSERT_WIDGET: {
+        if (op->new_item_id != CON_ITEMID_INVALID){
+            ConsoleWidget* w = NULL;
+            if (op->widget_kind == 1 /* ColorSlider */){
+                uint8_t init = 128;
+                if (op->init_blob && op->init_size>=1) init = *(const uint8_t*)op->init_blob;
+                w = widget_color_create(init);
+            }
+            if (w){
+                con_store_insert_widget_at(s->store, op->new_item_id, &op->pos, w);
+            }
+        }
+        break;
+    }
     default: break;
     }
 }
@@ -148,6 +174,7 @@ ConsoleSink* con_sink_create(ConsoleStore* store, ConsoleProcessor* proc, Replic
     /* простой actor_id: смесь адреса и стартового времени */
     s->actor_id = (uint32_t)((uintptr_t)s ^ (uintptr_t)SDL_GetTicks());
     s->last_hlc = SDL_GetTicks();
+    s->next_item_seq = 1;
     s->pending_n = 0;
     s->applied_n = 0;
     s->is_listener = is_listener ? 1 : 0;
@@ -220,6 +247,67 @@ void con_sink_commit(ConsoleSink* s, int user_id){
     }
 }
 
+
+/* ===== CRDT вставки (текст/виджеты) ===== */
+void con_sink_insert_text_tail(ConsoleSink* s, int user_id, const char* utf8_line){
+    if (!s || !utf8_line) return;
+    ConItemId left = con_store_last_id(s->store);
+    ConItemId right = CON_ITEMID_INVALID;
+    ConPosId pos = con_store_gen_between(s->store, left, right, s->actor_id);
+    ConItemId new_id = ((uint64_t)s->actor_id<<32) | (uint64_t)(s->next_item_seq++);
+    /* локально — сразу применим у слушателя */
+    if (s->is_listener){
+        con_store_insert_text_at(s->store, new_id, &pos, utf8_line);
+        if (s->proc) con_processor_on_command(s->proc, utf8_line);
+    }
+    if (s->repl){
+        ConOp op = {0};
+        op.op_id   = ((uint64_t)s->actor_id<<32) | (s->next_op_id++);
+        op.hlc     = con_sink_tick_hlc(s, SDL_GetTicks());
+        op.actor_id= s->actor_id;
+        op.user_id = user_id;
+        op.type    = CON_OP_INSERT_TEXT;
+        op.new_item_id = new_id;
+        op.parent_left = left;
+        op.parent_right= right;
+        op.pos = pos;
+        op.data = utf8_line; op.size = strlen(utf8_line);
+        pending_add(s, op.op_id);
+        replicator_publish(s->repl, &op);
+    }
+}
+
+void con_sink_insert_widget_color(ConsoleSink* s, int user_id, uint8_t initial_r0_255){
+    if (!s) return;
+    ConItemId left = con_store_last_id(s->store);
+    ConItemId right = CON_ITEMID_INVALID;
+    ConPosId pos = con_store_gen_between(s->store, left, right, s->actor_id);
+    ConItemId new_id = ((uint64_t)s->actor_id<<32) | (uint64_t)(s->next_item_seq++);
+    /* локально */
+    if (s->is_listener){
+        ConsoleWidget* w = widget_color_create(initial_r0_255);
+        if (w) con_store_insert_widget_at(s->store, new_id, &pos, w);
+    }
+    if (s->repl){
+        ConOp op = {0};
+        op.op_id   = ((uint64_t)s->actor_id<<32) | (s->next_op_id++);
+        op.hlc     = con_sink_tick_hlc(s, SDL_GetTicks());
+        op.actor_id= s->actor_id;
+        op.user_id = user_id;
+        op.type    = CON_OP_INSERT_WIDGET;
+        op.new_item_id = new_id;
+        op.parent_left = left;
+        op.parent_right= right;
+        op.pos = pos;
+        op.widget_kind = 1; /* ColorSlider */
+        uint8_t init = initial_r0_255;
+        op.init_blob = &init; op.init_size = 1;
+        pending_add(s, op.op_id);
+        replicator_publish(s->repl, &op);
+    }
+}
+
+
 void con_sink_widget_message(ConsoleSink* s, int user_id,
                              ConItemId id, const char* tag,
                              const void* data, size_t size){
@@ -269,21 +357,6 @@ void con_sink_widget_delta(ConsoleSink* s, int user_id,
 void con_sink_commit_text_command(ConsoleSink* s, int user_id, const char* utf8_line){
     (void)user_id;
     if (!s || !utf8_line) return;
-    /* локально — только у слушателя; промптовый sink публикует без локального дубля */
-    if (s->is_listener){
-        con_store_append_line(s->store, utf8_line);
-        if (s->proc) con_processor_on_command(s->proc, utf8_line);
-    }
-    /* публикуем как APPEND_LINE */
-    if (s->repl){
-        ConOp op = {0};
-        op.op_id   = ((uint64_t)s->actor_id<<32) | (s->next_op_id++);
-        op.hlc     = con_sink_tick_hlc(s, SDL_GetTicks());
-        op.actor_id= s->actor_id;
-        op.user_id = user_id;
-        op.type = CON_OP_APPEND_LINE;
-        op.data = utf8_line; op.size = strlen(utf8_line);
-        pending_add(s, op.op_id);
-        replicator_publish(s->repl, &op);
-    }
+    /* CRDT-вставка текста в хвост */
+    con_sink_insert_text_tail(s, user_id, utf8_line);
 }

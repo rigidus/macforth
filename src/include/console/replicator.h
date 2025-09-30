@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "store.h" /* ConItemId */
+#define REPL_MAX_LISTENERS 16
 
 #ifdef __cplusplus
 extern "C" {
@@ -13,7 +14,9 @@ extern "C" {
         CON_OP_COMMIT       = 3, /* перенос edit в историю; payload: UTF-8 строки (опц.) */
         CON_OP_APPEND_LINE  = 4, /* добавить готовую строку; payload: UTF-8 */
         CON_OP_WIDGET_MSG   = 5,
-        CON_OP_WIDGET_DELTA = 6
+        CON_OP_WIDGET_DELTA = 6,
+        CON_OP_INSERT_TEXT  = 7, /* CRDT-вставка текста по позиции */
+        CON_OP_INSERT_WIDGET= 8  /* CRDT-вставка виджета по позиции */
     } ConOpType;
 
     typedef struct {
@@ -26,6 +29,16 @@ extern "C" {
         const char* tag;       /* для widget_* */
         const void* data;      /* произвольный payload (UTF-8 или blob) */
         size_t     size;
+        /* ---- CRDT вставки ---- */
+        /* новые элементы получают глобальный ID от эмитента */
+        ConItemId  new_item_id;    /* ID вставляемого элемента */
+        ConItemId  parent_left;    /* «левый» сосед (может быть 0) */
+        ConItemId  parent_right;   /* «правый» сосед (может быть 0) */
+        ConPosId   pos;            /* итоговая позиция (детерминированная) */
+        /* для INSERT_WIDGET: тип и инициализационный blob */
+        uint32_t   widget_kind;    /* 1=ColorSlider, … */
+        const void* init_blob;
+        size_t      init_size;
     } ConOp;
 
     typedef struct Replicator Replicator;
@@ -38,7 +51,8 @@ extern "C" {
 
     /* Конкретные «бекенды» (M8 без сети) */
     Replicator* replicator_create_authoritative_local(void);
-    Replicator* replicator_create_crdt_local_stub(void); /* заглушка */
+    Replicator* replicator_create_crdt_local(void); /* локальный gossip с несколькими слушателями */
+
 
 #ifdef __cplusplus
 }

@@ -87,7 +87,7 @@ void con_processor_on_command(ConsoleProcessor* p, const char* line){
         return;
     }
     if (starts_with(s, "color")){
-        /* команда создаёт пустой ColorSlider (равносильна drop, но без DnD) */
+        /* Локальная вставка виджета (совместимость; можно перевести на sink позднее) */
         ConsoleWidget* w = widget_color_create(128);
         if (w) con_store_append_widget(p->store, w);
         return;

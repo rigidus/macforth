@@ -43,10 +43,16 @@ void replicator_publish(Replicator* r, const ConOp* op){
     if (!r || !op) return;
     ConOp tmp = *op;
     void* copy = NULL;
+    void* copy2 = NULL;
     if (op->data && op->size){
         copy = malloc(op->size);
         if (copy){ memcpy(copy, op->data, op->size); tmp.data = copy; }
     }
+    if (op->init_blob && op->init_size){
+        copy2 = malloc(op->init_size);
+        if (copy2){ memcpy(copy2, op->init_blob, op->init_size); tmp.init_blob = copy2; }
+    }
     loop_publish(r, &tmp);
     free(copy);
+    free(copy2);
 }

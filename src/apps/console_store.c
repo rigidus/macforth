@@ -4,13 +4,71 @@
 #include <stdio.h>
 #include <string.h>
 
+/* ==== CRDT позиция (Logoot/LSEQ-подобная) ==== */
+static int pos_cmp(const ConPosId* a, const ConPosId* b){
+    if (!a || !b) return 0;
+    int da = a->depth, db = b->depth;
+    int d = (da<db)?da:db;
+    for (int i=0;i<d;i++){
+        if (a->comp[i].digit != b->comp[i].digit)
+            return (int)a->comp[i].digit - (int)b->comp[i].digit;
+        if (a->comp[i].actor != b->comp[i].actor)
+            return (a->comp[i].actor < b->comp[i].actor) ? -1 : 1;
+    }
+    /* префикс меньше более длинного */
+    if (da != db) return (da < db) ? -1 : 1;
+    return 0;
+}
+int con_pos_cmp(const ConPosId* a, const ConPosId* b){ return pos_cmp(a,b); }
+
+static ConPosId pos_between_impl(const ConPosId* L, const ConPosId* R, uint32_t actor){
+    const uint16_t BASE = 0xFFFF; /* 65535 */
+    ConPosId out; memset(&out,0,sizeof(out));
+    ConPosId left  = L? *L : (ConPosId){0};
+    ConPosId right = R? *R : (ConPosId){ .depth=1, .comp={{BASE,0}} };
+    int depth=0;
+    for (;;){
+        uint16_t ld = (depth<left.depth ) ? left.comp[depth].digit  : 0;
+        uint16_t rd = (depth<right.depth) ? right.comp[depth].digit : BASE;
+        if (rd - ld > 1){
+            /* есть место */
+            for (int i=0;i<depth;i++){
+                if (i < left.depth){
+                    out.comp[i] = left.comp[i];
+                } else {
+                    out.comp[i].digit = 0;
+                    out.comp[i].actor = 0;
+                }
+            }
+            out.comp[depth].digit = (uint16_t)(ld + (rd-ld)/2);
+            out.comp[depth].actor = actor;
+            out.depth = (uint8_t)(depth+1);
+            return out;
+        }
+        depth++;
+        /* если упёрлись — двигаем глубину */
+        if (depth >= CON_POS_MAX_DEPTH){
+            /* fallback: просто прижмёмся справа */
+            out.depth = CON_POS_MAX_DEPTH;
+            for (int i=0;i<CON_POS_MAX_DEPTH;i++){
+                out.comp[i].digit = (i<left.depth)? left.comp[i].digit : 0;
+                out.comp[i].actor = (i<left.depth)? left.comp[i].actor : 0;
+            }
+            out.comp[CON_POS_MAX_DEPTH-1].digit = (uint16_t)((out.comp[CON_POS_MAX_DEPTH-1].digit<BASE)? out.comp[CON_POS_MAX_DEPTH-1].digit+1 : BASE);
+            out.comp[CON_POS_MAX_DEPTH-1].actor = actor;
+            return out;
+        }
+    }
+}
+
+
 /* ===== Внутренние типы ===== */
 struct SubEntry { ConsoleStoreListener cb; void* user; };
 
 typedef struct ConEntry {
     ConEntryType  type;
     ConItemId     id;      /* стабильный ID */
-    uint64_t      pos;     /* позиционный ключ (для сортировки) */
+    ConPosId      pos;     /* CRDT-позиция (лексикографическая) */
     union {
         struct { char* s; int len; } text;
         ConsoleWidget* widget;
@@ -29,7 +87,6 @@ struct ConsoleStore {
     int subs_n;
 
     ConItemId next_id;
-    uint64_t  last_pos;
 
     /* отсортированный порядок отображения: индексы в entries[] */
     int   order[CON_BUF_LINES];
@@ -37,9 +94,15 @@ struct ConsoleStore {
 };
 
 /* ===== Утилиты ===== */
+
 static int phys_index(const ConsoleStore* st, int visible_index){
     if (!st || visible_index<0 || visible_index>=st->count) return -1;
     return st->order[visible_index];
+}
+
+static int has_id(const ConsoleStore* st, ConItemId id){
+    for (int i=0;i<st->count;i++){ int p=(st->head+i)%CON_BUF_LINES; if (st->entries[p].id==id) return 1; }
+    return 0;
 }
 
 static void free_entry(ConEntry* e){
@@ -49,24 +112,9 @@ static void free_entry(ConEntry* e){
     } else if (e->type == CON_ENTRY_WIDGET){
         if (e->as.widget){ con_widget_destroy(e->as.widget); e->as.widget=NULL; }
     }
-    e->type = 0; e->id = 0; e->pos = 0;
+    e->type = 0; e->id = 0; e->pos = (ConPosId){0};
 }
 
-static uint64_t next_pos_after(const ConsoleStore* st){
-    uint64_t base = st ? st->last_pos : 0;
-    const uint64_t STEP = (uint64_t)1<<32;
-    uint64_t np = base + STEP;
-    if (np == 0) np = STEP;
-    return np;
-}
-
-static uint64_t pos_between(uint64_t left, uint64_t right){
-    if (left == 0 && right == 0) return ((uint64_t)1<<32);
-    if (left == 0) return right / 2;
-    if (right == 0) return left + (((uint64_t)1<<32));
-    if (left + 1 >= right) return left + 1;
-    return left + (right - left)/2;
-}
 
 static void notify(ConsoleStore* st){
     st->order_valid = 0;
@@ -93,8 +141,9 @@ static int cmp_order_by_pos_id(const void* a, const void* b){
     int ib = *(const int*)b;
     const ConEntry* ea = &g_sort_store->entries[ia];
     const ConEntry* eb = &g_sort_store->entries[ib];
-    if (ea->pos < eb->pos) return -1;
-    if (ea->pos > eb->pos) return  1;
+    int c = pos_cmp(&ea->pos, &eb->pos);
+    if (c<0) return -1;
+    if (c>0) return  1;
     if (ea->id  < eb->id)  return -1;
     if (ea->id  > eb->id)  return  1;
     return 0;
@@ -140,7 +189,7 @@ static void maybe_compact_tail(ConsoleStore* st){
         free_entry(&st->entries[idx]);
         st->entries[idx].type = CON_ENTRY_TEXT;
         st->entries[idx].id   = st->next_id++;
-        st->entries[idx].pos  = st->last_pos = next_pos_after(st);
+        st->entries[idx].pos  = con_store_gen_between(st, con_store_last_id(st), CON_ITEMID_INVALID, 0);
         size_t n = strlen(line);
         st->entries[idx].as.text.s = (char*)malloc(n+1);
         if (st->entries[idx].as.text.s){
@@ -151,6 +200,28 @@ static void maybe_compact_tail(ConsoleStore* st){
     }
 }
 
+/* ---- Поиск позиции элемента по ID (для gen_between) ---- */
+static int find_phys_by_id(const ConsoleStore* st, ConItemId id){
+    if (!st || id==CON_ITEMID_INVALID) return -1;
+    for (int i=0;i<st->count;i++){
+        int p=(st->head+i)%CON_BUF_LINES;
+        if (st->entries[p].id==id) return p;
+    }
+    return -1;
+}
+
+ConPosId con_store_gen_between(const ConsoleStore* st, ConItemId left, ConItemId right, uint32_t actor){
+    ConPosId L={0}, R={0}; ConPosId* pL=NULL; ConPosId* pR=NULL;
+    if (left != CON_ITEMID_INVALID){
+        int lp = find_phys_by_id(st, left);
+        if (lp>=0){ L = st->entries[lp].pos; pL=&L; }
+    }
+    if (right != CON_ITEMID_INVALID){
+        int rp = find_phys_by_id(st, right);
+        if (rp>=0){ R = st->entries[rp].pos; pR=&R; }
+    }
+    return pos_between_impl(pL, pR, actor);
+}
 
 /* ===== Конструктор/деструктор ===== */
 ConsoleStore* con_store_create(void){
@@ -160,7 +231,6 @@ ConsoleStore* con_store_create(void){
     st->edit_len = 0; st->edit[0]=0;
     st->subs_n = 0;
     st->next_id = 1;
-    st->last_pos = 0;
     st->order_valid = 0;
 
     /* приветствие как обычные TEXT-entry (без notify — подписчиков ещё нет) */
@@ -169,7 +239,8 @@ ConsoleStore* con_store_create(void){
         free_entry(&st->entries[idx]);
         st->entries[idx].type = CON_ENTRY_TEXT;
         st->entries[idx].id   = st->next_id++;
-        st->entries[idx].pos  = st->last_pos = next_pos_after(st);
+        /* начало диапазона: [0 .. BASE] → возьмём «середину» */
+        st->entries[idx].pos  = pos_between_impl(NULL,NULL,0);
         const char* hello1 = "console ready. type here...";
         size_t n = strlen(hello1);
         st->entries[idx].as.text.s = (char*)malloc(n+1);
@@ -186,7 +257,7 @@ ConsoleStore* con_store_create(void){
         free_entry(&st->entries[idx]);
         st->entries[idx].type = CON_ENTRY_TEXT;
         st->entries[idx].id   = st->next_id++;
-        st->entries[idx].pos  = st->last_pos = next_pos_after(st);
+        st->entries[idx].pos  = pos_between_impl(&st->entries[(idx-1+CON_BUF_LINES)%CON_BUF_LINES].pos,NULL,0);
         const char* hello2 = "press Enter to commit line";
         size_t n = strlen(hello2);
         st->entries[idx].as.text.s = (char*)malloc(n+1);
@@ -222,7 +293,8 @@ static void commit_line(ConsoleStore* st){
     free_entry(&st->entries[idx]);
     st->entries[idx].type = CON_ENTRY_TEXT;
     st->entries[idx].id   = st->next_id++;
-    st->entries[idx].pos  = st->last_pos = next_pos_after(st);
+    /* по умолчанию — в конец: between(last,0) */
+    st->entries[idx].pos  = con_store_gen_between(st, con_store_last_id(st), CON_ITEMID_INVALID, 0);
     st->entries[idx].as.text.s = (char*)malloc((size_t)st->edit_len + 1);
     if (st->entries[idx].as.text.s){
         memcpy(st->entries[idx].as.text.s, st->edit, (size_t)st->edit_len);
@@ -240,7 +312,7 @@ static void append_line_internal(ConsoleStore* st, const char* s){
     free_entry(&st->entries[idx]);
     st->entries[idx].type = CON_ENTRY_TEXT;
     st->entries[idx].id   = st->next_id++;
-    st->entries[idx].pos  = st->last_pos = next_pos_after(st);
+    st->entries[idx].pos  = con_store_gen_between(st, con_store_last_id(st), CON_ITEMID_INVALID, 0);
     size_t n = strlen(s);
     st->entries[idx].as.text.s = (char*)malloc(n + 1);
     if (st->entries[idx].as.text.s){
@@ -259,7 +331,7 @@ static ConItemId append_widget_internal(ConsoleStore* st, ConsoleWidget* w){
     free_entry(&st->entries[idx]);
     st->entries[idx].type = CON_ENTRY_WIDGET;
     st->entries[idx].id   = st->next_id++;
-    st->entries[idx].pos  = st->last_pos = next_pos_after(st);
+    st->entries[idx].pos  = con_store_gen_between(st, con_store_last_id(st), CON_ITEMID_INVALID, 0);
     st->entries[idx].as.widget = w;
     ConItemId id = st->entries[idx].id;
     if (st->count < CON_BUF_LINES) st->count++;
@@ -411,30 +483,10 @@ ConEntryType con_store_get_type(const ConsoleStore* st, int index){
     return st->entries[phys].type;
 }
 
-uint64_t con_store_get_pos(const ConsoleStore* st, int index){
-    if (!st || index<0 || index>=st->count) return 0;
-    if (!st->order_valid) rebuild_order((ConsoleStore*)st);
-    int phys = phys_index(st, index);
-    if (phys<0) return 0;
-    return st->entries[phys].pos;
-}
 
 ConItemId con_store_insert_text_between(ConsoleStore* st, ConItemId left, ConItemId right, const char* s){
     if (!st || !s) return CON_ITEMID_INVALID;
-    uint64_t lpos = 0, rpos = 0;
-    if (left != CON_ITEMID_INVALID){
-        for (int i=0;i<st->count;i++){
-            int p = (st->head + i) % CON_BUF_LINES;
-            if (st->entries[p].id == left){ lpos = st->entries[p].pos; break; }
-        }
-    }
-    if (right != CON_ITEMID_INVALID){
-        for (int i=0;i<st->count;i++){
-            int p = (st->head + i) % CON_BUF_LINES;
-            if (st->entries[p].id == right){ rpos = st->entries[p].pos; break; }
-        }
-    }
-    uint64_t pos = pos_between(lpos, rpos);
+    ConPosId pos = con_store_gen_between(st, left, right, 0);
     int idx = (st->head + st->count) % CON_BUF_LINES;
     free_entry(&st->entries[idx]);
     st->entries[idx].type = CON_ENTRY_TEXT;
@@ -452,4 +504,49 @@ ConItemId con_store_insert_text_between(ConsoleStore* st, ConItemId left, ConIte
         return st->entries[idx].id;
     }
     return CON_ITEMID_INVALID;
+}
+
+ConItemId con_store_insert_text_at(ConsoleStore* st, ConItemId forced_id, const ConPosId* pos, const char* s){
+    if (!st || !pos || !s) return CON_ITEMID_INVALID;
+    if (forced_id && has_id(st, forced_id)) return forced_id; /* идемпотентность */
+    int idx = (st->head + st->count) % CON_BUF_LINES;
+    free_entry(&st->entries[idx]);
+    st->entries[idx].type = CON_ENTRY_TEXT;
+    st->entries[idx].id   = forced_id ? forced_id : st->next_id++;
+    st->entries[idx].pos  = *pos;
+    size_t n = strlen(s);
+    st->entries[idx].as.text.s = (char*)malloc(n+1);
+    if (st->entries[idx].as.text.s){
+        memcpy(st->entries[idx].as.text.s, s, n);
+        st->entries[idx].as.text.s[n]=0;
+        st->entries[idx].as.text.len = (int)n;
+        if (st->count < CON_BUF_LINES) st->count++; else st->head = (st->head + 1) % CON_BUF_LINES;
+        notify(st);
+        maybe_compact_tail(st);
+        return st->entries[idx].id;
+    }
+    return CON_ITEMID_INVALID;
+}
+
+ConItemId con_store_insert_widget_at(ConsoleStore* st, ConItemId forced_id, const ConPosId* pos, ConsoleWidget* w){
+    if (!st || !pos || !w) return CON_ITEMID_INVALID;
+    if (forced_id && has_id(st, forced_id)) { con_widget_destroy(w); return forced_id; }
+    int idx = (st->head + st->count) % CON_BUF_LINES;
+    free_entry(&st->entries[idx]);
+    st->entries[idx].type = CON_ENTRY_WIDGET;
+    st->entries[idx].id   = forced_id ? forced_id : st->next_id++;
+    st->entries[idx].pos  = *pos;
+    st->entries[idx].as.widget = w;
+    if (st->count < CON_BUF_LINES) st->count++; else st->head = (st->head + 1) % CON_BUF_LINES;
+    notify(st);
+    maybe_compact_tail(st);
+    return st->entries[idx].id;
+}
+
+ConItemId con_store_last_id(const ConsoleStore* st){
+    if (!st || st->count<=0) return CON_ITEMID_INVALID;
+    /* найдём самый правый по order */
+    if (!st->order_valid) rebuild_order((ConsoleStore*)st);
+    int phys = st->order[st->count-1];
+    return st->entries[phys].id;
 }

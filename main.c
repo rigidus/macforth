@@ -84,7 +84,7 @@ int main(void) {
     ConsoleStore*     con_store = con_store_create();
     ConsoleProcessor* con_proc  = con_processor_create(con_store);
     /* Репликатор (локальный «лидер» в том же процессе) */
-    Replicator*       repl      = replicator_create_authoritative_local();
+    Replicator*       repl      = replicator_create_crdt_local();
 
     /* sink для промптов (публикует, но не слушает подтверждения) */
     ConsoleSink* con_sink_for_prompts = con_sink_create(con_store, con_proc, repl, 0);

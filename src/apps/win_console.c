@@ -447,18 +447,14 @@ static void con_drop(Window* w, WMDrag* d, int lx, int ly){
     if (!d || !d->mime) return;
     ConsoleViewState *st = (ConsoleViewState*)w->user;
     if (strcmp(d->mime, "application/x-square")==0){
-        /* Создаём интерактивный ColorSlider (демо): управляет глобальной переменной R */
+        /* Вставляем виджет через CRDT-sink (реплицируемо) */
         uint8_t initial = 128;
         if (d->size >= (int)sizeof(SquarePayload) && d->data){
             const SquarePayload* sp = (const SquarePayload*)d->data;
             initial = (uint8_t)((sp->colA >> 16) & 0xFF);
         }
-        ConsoleWidget* cw = widget_color_create(initial);
-        if (cw){
-            ConItemId id = con_store_append_widget(st->store, cw);
-            con_store_notify_changed(st->store);
-            w->invalid_all = true;
-            (void)id; /* в М4 мы ещё не отображаем ID во view, но он есть */
+        if (st->sink){
+            con_sink_insert_widget_color(st->sink, 0/*user_id*/, initial);
             d->effect = WM_DRAG_COPY;
         } else {
             d->effect = WM_DRAG_REJECT;

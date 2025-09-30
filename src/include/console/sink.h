@@ -34,6 +34,15 @@ extern "C" {
     /* Инъекция готовой командной строки: добавить в историю как TEXT и отработать процессором. */
     void con_sink_commit_text_command(ConsoleSink*, int user_id, const char* utf8_line);
 
+
+    /* ===== CRDT вставки через sink =====
+       Вставить текст «в конец» (left = last, right = 0). */
+    void con_sink_insert_text_tail(ConsoleSink*, int user_id, const char* utf8_line);
+
+    /* Вставка виджета ColorSlider в «конец».
+       Можно расширить до generic (widget_kind/init), но для демо достаточно. */
+    void con_sink_insert_widget_color(ConsoleSink*, int user_id, uint8_t initial_r0_255);
+
     /* ---- HLC/actor helpers (для штамповки дельт виджетов) ---- */
     /* Уникальный идентификатор актора (узла) этого sink’а. */
     uint32_t con_sink_get_actor_id(ConsoleSink*);

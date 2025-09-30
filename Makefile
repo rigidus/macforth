@@ -46,7 +46,6 @@ SRC_APPS := \
   $(APPS_DIR)/console_prompt.c \
   $(APPS_DIR)/console_store.c \
   $(APPS_DIR)/console_sink.c \
-  $(APPS_DIR)/replica_authoritative_local.c \
   $(APPS_DIR)/replica_crdt_local.c \
   $(APPS_DIR)/win_paint.c \
   $(APPS_DIR)/win_square.c \

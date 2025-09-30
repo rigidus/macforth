@@ -3,6 +3,8 @@
 #include <stdint.h>
 #include "console/widget.h"
 
+#define CON_POS_MAX_DEPTH 8
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -24,6 +26,31 @@ extern "C" {
 
     typedef struct ConsoleStore ConsoleStore;
     typedef void (*ConsoleStoreListener)(void* user);
+
+
+    /* ===== CRDT позиция (Logoot/LSEQ-подобная) =====
+       Идентификатор позиции — лексикографический список компонентов (digit,actor).
+       depth — фактическая длина (<= CON_POS_MAX_DEPTH). */
+    typedef struct {
+        uint8_t depth;
+        struct {
+            uint16_t digit;   /* 0..65535 */
+            uint32_t actor;   /* кто «поставил» компонент */
+        } comp[CON_POS_MAX_DEPTH];
+    } ConPosId;
+
+    /* Сравнение позиций: <0 если a<b, >0 если a>b, 0 если равны. */
+    int  con_pos_cmp(const ConPosId* a, const ConPosId* b);
+
+    /* Сгенерировать позицию между элементами с ID left/right (0 — отсутствие),
+       используя actor_id эмитента. Детали: расширяет глубину при нехватке «места». */
+    ConPosId con_store_gen_between(const ConsoleStore*, ConItemId left, ConItemId right, uint32_t actor_id);
+
+    /* Вставки по заданной позиции/ID (идемпотентно: если id уже существует — игнор). */
+    ConItemId con_store_insert_text_at(ConsoleStore*, ConItemId forced_id, const ConPosId* pos, const char* s);
+    ConItemId con_store_insert_widget_at(ConsoleStore*, ConItemId forced_id, const ConPosId* pos, ConsoleWidget* w);
+
+
     /* Тип записи ленты */
     typedef enum {
         CON_ENTRY_TEXT   = 1,
@@ -55,9 +82,7 @@ extern "C" {
     ConsoleWidget*  con_store_get_widget(const ConsoleStore*, int index); /* NULL если не виджет */
     /* Тип записи (TEXT/WIDGET) — по видимому индексу */
     ConEntryType    con_store_get_type(const ConsoleStore*, int index);
-    /* Позиционный ключ (для отладки/теста) — по видимому индексу */
-    uint64_t        con_store_get_pos(const ConsoleStore*, int index);
-    /* ID ↔ индекс */
+    /* ID <-> индекс */
     ConItemId       con_store_get_id(const ConsoleStore*, int index);
     int             con_store_find_index_by_id(const ConsoleStore*, ConItemId id); /* -1 если нет */
     /* М4: адресные сообщения к виджетам по ID. Возвращает 1, если виджет изменён. */
@@ -66,6 +91,9 @@ extern "C" {
        Если left==0 — вставка в начало; если right==0 — в конец.
        Возвращает присвоенный ID либо CON_ITEMID_INVALID. */
     ConItemId       con_store_insert_text_between(ConsoleStore*, ConItemId left, ConItemId right, const char* s);
+    /* Вспомогательное: получить последний видимый ID (0, если пусто). */
+    ConItemId       con_store_last_id(const ConsoleStore*);
+
 
 #ifdef __cplusplus
 }
