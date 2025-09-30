@@ -167,7 +167,7 @@ static void console_destroy(Window *w){
     if (!w) return;
     ConsoleViewState *st = (ConsoleViewState*)w->user;
     if (st){
-        if (st->sink) con_sink_destroy(st->sink);
+        /* sink принадлежит внешнему коду (main), не уничтожаем здесь */
         free(st);
     }
     w->user = NULL;
@@ -220,12 +220,9 @@ static void console_on_event(Window *w, void* wm, const InputEvent *e, int lx, i
                     if (wid != CON_ITEMID_INVALID && st->sink){
                         char blob[32];
                         size_t blen = sizeof(blob);
-                        const char* tag = "set_state";
+                        const char* tag = "set"; /* унификация протокола: полный снимок состояния */
                         if (cw->get_state_blob && cw->get_state_blob(cw, blob, &blen) && blen>0){
                             con_sink_widget_delta(st->sink, e->user_id, wid, tag, blob, blen);
-                        } else {
-                            /* Фолбэк: уведомим, что состояние изменилось (без полезной нагрузки) */
-                            con_sink_widget_delta(st->sink, e->user_id, wid, "changed", NULL, 0);
                         }
                     } else {
                         /* как раньше — локальное уведомление (на случай отсутствия sink) */
@@ -348,7 +345,7 @@ static const WindowVTable V = {
 };
 
 
-void win_console_init(Window *w, Rect frame, int z, ConsoleStore* store, ConsoleProcessor* proc){
+void win_console_init(Window *w, Rect frame, int z, ConsoleStore* store, ConsoleProcessor* proc, ConsoleSink* sink){
     window_init(w, "console", frame, z, &V);
 
     ConsoleViewState *st = (ConsoleViewState*)calloc(1, sizeof(ConsoleViewState));
@@ -360,7 +357,7 @@ void win_console_init(Window *w, Rect frame, int z, ConsoleStore* store, Console
     /* модель и sink */
     st->store = store;
     st->proc  = proc;
-    st->sink  = con_sink_create(store, proc);
+    st->sink  = sink;
     /* подписка на изменения Store — чтобы вторая вьюха увидела обновления */
     con_store_subscribe(store, on_store_changed, w);
 

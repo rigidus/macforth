@@ -43,11 +43,15 @@ SRC_APPS := \
   $(APPS_DIR)/global_state.c \
   $(APPS_DIR)/widget_color.c \
   $(APPS_DIR)/console_processor.c \
+  $(APPS_DIR)/console_prompt.c \
   $(APPS_DIR)/console_store.c \
   $(APPS_DIR)/console_sink.c \
+  $(APPS_DIR)/replica_authoritative_local.c \
+  $(APPS_DIR)/replica_crdt_local.c \
   $(APPS_DIR)/win_paint.c \
   $(APPS_DIR)/win_square.c \
-  $(APPS_DIR)/win_console.c
+  $(APPS_DIR)/win_console.c \
+  $(APPS_DIR)/win_prompts.c
 
 SRC_PLAT := \
   $(PLAT_DIR)/platform_sdl.c

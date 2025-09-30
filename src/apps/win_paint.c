@@ -16,6 +16,7 @@ static void on_frame_changed(Window *w, int old_w, int old_h){
 }
 
 static void on_event(Window *w, void* wm, const InputEvent *e, int lx, int ly){
+    (void)wm;
     if (e->type==3){ // mouse button
         if (e->mouse.button==1 && e->mouse.state==1){
             uint32_t *px = surface_pixels(w->cache);

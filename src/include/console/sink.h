@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include "store.h"
 #include "processor.h"
+#include "replicator.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -10,9 +11,9 @@ extern "C" {
 
     typedef struct ConsoleSink ConsoleSink;
 
-    /* В M1 sink — тонкая обёртка над Store (loopback, без сети) */
-    /* В M2 sink знает ещё и про процессор (loopback) */
-    ConsoleSink* con_sink_create(ConsoleStore* store, ConsoleProcessor* proc);
+    /* M8: sink делает локальную спекуляцию и публикует операции через Replicator.
+       is_listener != 0 — этот sink регистрируется как получатель «подтверждённых» op’ов. */
+    ConsoleSink* con_sink_create(ConsoleStore* store, ConsoleProcessor* proc, Replicator* repl, int is_listener);
     void         con_sink_destroy(ConsoleSink* s);
 
     /* user_id зарезервирован под М2 (мультипользовательские промпты) */

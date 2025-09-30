@@ -12,8 +12,10 @@
 #include "apps/win_paint.h"
 #include "apps/win_square.h"
 #include "apps/win_console.h"
+#include "apps/win_prompts.h"
 #include "console/store.h"
 #include "console/processor.h"
+#include "console/replicator.h"
 
 #include "gfx/text.h"
 
@@ -78,15 +80,35 @@ int main(void) {
                     0xFF1E90FF, 0xFFFF66FF, 3000, 0.25f);
     wm_add(wm, &wq2);
 
+    /* ===== Консольная модель и процессор (до создания промптов) ===== */
+    ConsoleStore*     con_store = con_store_create();
+    ConsoleProcessor* con_proc  = con_processor_create(con_store);
+    /* Репликатор (локальный «лидер» в том же процессе) */
+    Replicator*       repl      = replicator_create_authoritative_local();
+
+    /* sink для промптов (публикует, но не слушает подтверждения) */
+    ConsoleSink* con_sink_for_prompts = con_sink_create(con_store, con_proc, repl, 0);
+    /* sink для консоли (и публикует, и слушает подтверждения → reconcile) */
+    ConsoleSink* con_sink_for_console = con_sink_create(con_store, con_proc, repl, 1);
+
+    /* окно с двумя промптами (user_1=0, user_2=1) */
+    static Window wprompts;
+    int ph = 80; /* две строки c отступами */
+    win_prompts_init(&wprompts,
+                     rect_make(20, 20, sw-40, ph),
+                     90,
+                     con_sink_for_prompts);
+    wm_add(wm, &wprompts);
+
     // консоль
     static Window wcon;
+
     /* Модель и процессор для консоли */
-    ConsoleStore* con_store = con_store_create();
-    ConsoleProcessor* con_proc = con_processor_create(con_store);
     win_console_init(&wcon,
                      rect_make(20, sh - sh/3 - 20, sw-40, sh/3),
                      100,
-                     con_store, con_proc);
+                     con_store, con_proc, con_sink_for_console);
+
     wm_add(wm, &wcon);
 
     wm_damage_add(wm, rect_make(0,0,sw,sh));
@@ -104,9 +126,17 @@ int main(void) {
     wm_destroy(wm);
     text_shutdown();
 
+
+    /* Sink для промптов */
+    con_sink_destroy(con_sink_for_prompts);
+
+    /* Sink консоли */
+    con_sink_destroy(con_sink_for_console);
+
     /* Store разделяет жизнь нескольких вьюх; освобождаем в конце программы */
     con_processor_destroy(con_proc);
     con_store_destroy(con_store);
+    replicator_destroy(repl);
 
     plat_destroy(plat);
 
