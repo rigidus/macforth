@@ -19,6 +19,11 @@ extern "C" {
         int  (*on_message)(ConsoleWidget* self, const char* tag, const void* data, size_t size);
         /* Текстовая форма для «ленивых»/строковых отображений (может вернуть внутренний/временный буфер или out). */
         const char* (*as_text)(ConsoleWidget* self, char* out, int cap);
+        /* Снимок текущего состояния виджета в виде бинарного blob — для эмиссии «дельт» (set_state).
+           На входе *inout_size — размер буфера out; на выходе — фактически записанный размер.
+           Возвращает 1 при успехе, 0 — если сериализация не поддерживается. */
+        int  (*get_state_blob)(ConsoleWidget* self, void* out, size_t* inout_size);
+
         /* Освобождение */
         void (*destroy)(ConsoleWidget* self);
     };

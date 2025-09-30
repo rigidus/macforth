@@ -51,3 +51,19 @@ void con_sink_widget_message(ConsoleSink* s, int user_id,
     /* М4 loopback: сразу в Store → Widget */
     con_store_widget_message(s->store, id, tag, data, size);
 }
+
+void con_sink_widget_delta(ConsoleSink* s, int user_id,
+                           ConItemId id, const char* tag,
+                           const void* data, size_t size){
+    (void)user_id;
+    if (!s) return;
+    /* Пока нет сети — дельта эквивалентна локальному сообщению */
+    con_store_widget_message(s->store, id, tag, data, size);
+}
+
+void con_sink_commit_text_command(ConsoleSink* s, int user_id, const char* utf8_line){
+    (void)user_id;
+    if (!s || !utf8_line) return;
+    con_store_append_line(s->store, utf8_line);
+    if (s->proc) con_processor_on_command(s->proc, utf8_line);
+}

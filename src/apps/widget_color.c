@@ -11,9 +11,25 @@ typedef struct {
     int dragging;  /* 0/1 */
 } ColorSlider;
 
+static int color_get_state_blob(ConsoleWidget* self, void* out, size_t* inout_size);
+
 static const char* color_as_text(ConsoleWidget* self, char* out, int cap);
 
 static int clampi(int v, int lo, int hi){ return v<lo?lo:(v>hi?hi:v); }
+
+static int color_get_state_blob(ConsoleWidget* self, void* out, size_t* inout_size){
+    if (!inout_size) return 0;
+    size_t need = sizeof(int);
+    if (!out || *inout_size < need){
+        *inout_size = need;
+        return 0;
+    }
+    ColorSlider* cs = (ColorSlider*)self;
+    int v = cs->value;
+    memcpy(out, &v, sizeof(v));
+    *inout_size = sizeof(v);
+    return 1;
+}
 
 static void color_draw(ConsoleWidget* self, Surface* dst, int x, int y, int w, int h, uint32_t fg){
     (void)fg;
@@ -119,6 +135,7 @@ ConsoleWidget* widget_color_create(uint8_t initial_r0_255){
     cs->base.on_event = color_on_event;
     cs->base.on_message = color_on_message;
     cs->base.as_text  = color_as_text;
+    cs->base.get_state_blob = color_get_state_blob;
     cs->base.destroy  = color_destroy;
     return (ConsoleWidget*)cs;
 }

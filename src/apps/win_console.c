@@ -14,6 +14,7 @@
 #include "apps/widget_color.h"
 #include "apps/win_square.h" /* для SquarePayload из DnD */
 
+#define MIME_CMD_TEXT "application/x-console-cmd-text"
 
 typedef struct {
     /* сетка и метрики */
@@ -129,7 +130,8 @@ static void console_draw(Window *w, const Rect *area){
         if (idx >= con_store_count(st->store)) break;
         ConsoleWidget* cw = con_store_get_widget(st->store, idx);
         if (cw){
-            /* виджет занимает всю строку */
+            /* виджет занимает всю строку (Entry=WIDGET) */
+            /* (тип можно запросить через con_store_get_type при необходимости разветвления) */
             int y = vis_row * st->cell_h;
             if (cw->draw){
                 cw->draw(cw, w->cache, 0, y, st->cols*st->cell_w, st->cell_h, st->col_fg);
@@ -212,6 +214,23 @@ static void console_on_event(Window *w, void* wm, const InputEvent *e, int lx, i
                 if (changed){
                     /* Виджет изменился — перерисовать строку и уведомить всех слушателей Store */
                     con_store_notify_changed(st->store);
+                    /* Эмиссия дельты: сериализуем текущее состояние виджета и отправляем через Sink.
+                       В loopback оно же применится локально (идемпотентно). */
+                    ConItemId wid = con_store_get_id(st->store, idx);
+                    if (wid != CON_ITEMID_INVALID && st->sink){
+                        char blob[32];
+                        size_t blen = sizeof(blob);
+                        const char* tag = "set_state";
+                        if (cw->get_state_blob && cw->get_state_blob(cw, blob, &blen) && blen>0){
+                            con_sink_widget_delta(st->sink, e->user_id, wid, tag, blob, blen);
+                        } else {
+                            /* Фолбэк: уведомим, что состояние изменилось (без полезной нагрузки) */
+                            con_sink_widget_delta(st->sink, e->user_id, wid, "changed", NULL, 0);
+                        }
+                    } else {
+                        /* как раньше — локальное уведомление (на случай отсутствия sink) */
+                        con_store_notify_changed(st->store);
+                    }
                     Rect r = rect_make(w->frame.x, w->frame.y + cell_y, st->cols*st->cell_w, st->cell_h);
                     window_invalidate(w, r);
                     w->invalid_all = true;
@@ -270,6 +289,8 @@ static void con_drag_over(Window* w, WMDrag* d, int lx, int ly){
     if (!d || !d->mime) { d->effect = WM_DRAG_NONE; return; }
     if (strcmp(d->mime, "application/x-square")==0){
         d->effect = WM_DRAG_COPY; /* покажем, что можем вставить в консоль */
+    } else if (strcmp(d->mime, MIME_CMD_TEXT)==0){
+        d->effect = WM_DRAG_COPY;
     } else {
         d->effect = WM_DRAG_REJECT;
     }
@@ -292,6 +313,20 @@ static void con_drop(Window* w, WMDrag* d, int lx, int ly){
             con_store_notify_changed(st->store);
             w->invalid_all = true;
             (void)id; /* в М4 мы ещё не отображаем ID во view, но он есть */
+            d->effect = WM_DRAG_COPY;
+        } else {
+            d->effect = WM_DRAG_REJECT;
+        }
+    } else if (strcmp(d->mime, MIME_CMD_TEXT)==0){
+        /* DnD текстовой команды: payload — UTF-8 (может быть не \0-terminated) */
+        if (st->sink && d->data && d->size>0){
+            char tmp[CON_MAX_LINE];
+            size_t n = d->size; if (n >= sizeof(tmp)) n = sizeof(tmp)-1;
+            memcpy(tmp, d->data, n);
+            tmp[n] = 0;
+            /* Добавим как строку в историю и сразу выполним процессором (не трогая edit) */
+            con_sink_commit_text_command(st->sink, 0/*user_id*/, tmp);
+            w->invalid_all = true;
             d->effect = WM_DRAG_COPY;
         } else {
             d->effect = WM_DRAG_REJECT;

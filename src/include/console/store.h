@@ -24,6 +24,11 @@ extern "C" {
 
     typedef struct ConsoleStore ConsoleStore;
     typedef void (*ConsoleStoreListener)(void* user);
+    /* Тип записи ленты */
+    typedef enum {
+        CON_ENTRY_TEXT   = 1,
+        CON_ENTRY_WIDGET = 2
+    } ConEntryType;
 
     /* Создание/удаление */
     ConsoleStore* con_store_create(void);
@@ -48,11 +53,19 @@ extern "C" {
     int         con_store_get_line_len(const ConsoleStore*, int index);
     int         con_store_get_edit(const ConsoleStore*, char* out, int cap); /* копирует текущий edit */
     ConsoleWidget*  con_store_get_widget(const ConsoleStore*, int index); /* NULL если не виджет */
+    /* Тип записи (TEXT/WIDGET) — по видимому индексу */
+    ConEntryType    con_store_get_type(const ConsoleStore*, int index);
+    /* Позиционный ключ (для отладки/теста) — по видимому индексу */
+    uint64_t        con_store_get_pos(const ConsoleStore*, int index);
     /* ID ↔ индекс */
     ConItemId       con_store_get_id(const ConsoleStore*, int index);
     int             con_store_find_index_by_id(const ConsoleStore*, ConItemId id); /* -1 если нет */
     /* М4: адресные сообщения к виджетам по ID. Возвращает 1, если виджет изменён. */
     int             con_store_widget_message(ConsoleStore*, ConItemId id, const char* tag, const void* data, size_t size);
+    /* (Опционально) Вставка текстовой строки между двумя элементами (по их ID).
+       Если left==0 — вставка в начало; если right==0 — в конец.
+       Возвращает присвоенный ID либо CON_ITEMID_INVALID. */
+    ConItemId       con_store_insert_text_between(ConsoleStore*, ConItemId left, ConItemId right, const char* s);
 
 #ifdef __cplusplus
 }

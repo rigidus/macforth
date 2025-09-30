@@ -24,6 +24,14 @@ extern "C" {
                                  ConItemId id,
                                  const char* tag,
                                  const void* data, size_t size);
+    /* Эмиссия «дельт» (операций), проходящая через Sink/репликатор.
+       В текущем loopback-режиме эквивалентна widget_message. */
+    void con_sink_widget_delta(ConsoleSink*, int user_id,
+                               ConItemId id,
+                               const char* tag,
+                               const void* data, size_t size);
+    /* Инъекция готовой командной строки: добавить в историю как TEXT и отработать процессором. */
+    void con_sink_commit_text_command(ConsoleSink*, int user_id, const char* utf8_line);
 
 #ifdef __cplusplus
 }
