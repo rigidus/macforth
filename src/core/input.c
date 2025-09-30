@@ -16,7 +16,7 @@ void input_route_mouse(WM* wm, const InputEvent *e){
     if (d && d->active) {
         wm_drag_update_pos(wm, uid, mx, my);
     }
-    
+
     // клик ЛКМ — определить top и фокус
     Window *top = wm_topmost_at(wm, mx, my);
     if (e->type==3 && e->mouse.button==1 && e->mouse.state==1){
@@ -33,7 +33,7 @@ void input_route_mouse(WM* wm, const InputEvent *e){
 
     // сохраняем старый прямоугольник окна до обработки
     Rect oldf = target->frame;
-    
+
     /* ---- если активен dnd для uid, раскатываем протокол enter/over/leave ---- */
     if (d && d->active){
         Window* new_hover = top;
@@ -62,8 +62,16 @@ void input_route_mouse(WM* wm, const InputEvent *e){
                 d->hover->vt->on_drop(d->hover, d, lx, ly);
             }
             wm_end_drag(wm, uid);
+            /* drop обработан — не пробрасываем этот button-up дальше в on_event */
+            return;
         }
     }
+
+    /* Пока активен drag, мышь уже «обслужена» протоколом DnD.
+       Съедаем mouse-события, чтобы окна не реагировали вторично. */
+    /* if (e->type==3 || e->type==4 || e->type==5){ */
+    /*     return; */
+    /* } */
 
     /* ---- обычная маршрутизация событий в сфокусированное окно ---- */
     if (!target) return;

@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include <stddef.h>
 #include "store.h"
 #include "processor.h"
 
@@ -18,6 +19,11 @@ extern "C" {
     void con_sink_submit_text(ConsoleSink*, int user_id, const char* utf8);
     void con_sink_backspace(ConsoleSink*, int user_id);
     void con_sink_commit(ConsoleSink*, int user_id);
+    /* адресуемые сообщения к виджетам */
+    void con_sink_widget_message(ConsoleSink*, int user_id,
+                                 ConItemId id,
+                                 const char* tag,
+                                 const void* data, size_t size);
 
 #ifdef __cplusplus
 }

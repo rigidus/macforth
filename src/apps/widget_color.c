@@ -11,6 +11,8 @@ typedef struct {
     int dragging;  /* 0/1 */
 } ColorSlider;
 
+static const char* color_as_text(ConsoleWidget* self, char* out, int cap);
+
 static int clampi(int v, int lo, int hi){ return v<lo?lo:(v>hi?hi:v); }
 
 static void color_draw(ConsoleWidget* self, Surface* dst, int x, int y, int w, int h, uint32_t fg){
@@ -40,6 +42,29 @@ static void color_draw(ConsoleWidget* self, Surface* dst, int x, int y, int w, i
         surface_blit(lab, 0,0, surface_w(lab), surface_h(lab), dst, x+4, y+4);
         surface_free(lab);
     }
+}
+
+/* адресные сообщения
+   tag: "set" (payload: int 0..255), "delta" (payload: int d) */
+static int color_on_message(ConsoleWidget* self, const char* tag, const void* data, size_t size){
+    ColorSlider* cs = (ColorSlider*)self;
+    if (!tag) return 0;
+    int old = cs->value;
+    if (strcmp(tag, "set")==0 && data && size>=sizeof(int)){
+        int v = *(const int*)data;
+        cs->value = clampi(v, 0, 255);
+    } else if (strcmp(tag, "delta")==0 && data && size>=sizeof(int)){
+        int d = *(const int*)data;
+        cs->value = clampi(cs->value + d, 0, 255);
+    } else {
+        return 0;
+    }
+    if (cs->value != old){
+        uint32_t argb = 0xFF000000 | ((uint32_t)cs->value<<16);
+        global_set_color(argb);
+        return 1;
+    }
+    return 0;
 }
 
 static int pos_to_value(int lx, int w){
@@ -79,12 +104,21 @@ static void color_destroy(ConsoleWidget* self){
     free(self);
 }
 
+static const char* color_as_text(ConsoleWidget* self, char* out, int cap){
+    ColorSlider* cs = (ColorSlider*)self;
+    if (!out || cap<8) return NULL;
+    SDL_snprintf(out, cap, "[Color R=%d]", cs->value);
+    return out;
+}
+
 ConsoleWidget* widget_color_create(uint8_t initial_r0_255){
     ColorSlider* cs = (ColorSlider*)calloc(1, sizeof(ColorSlider));
     if (!cs) return NULL;
     cs->value = initial_r0_255;
     cs->base.draw     = color_draw;
     cs->base.on_event = color_on_event;
+    cs->base.on_message = color_on_message;
+    cs->base.as_text  = color_as_text;
     cs->base.destroy  = color_destroy;
     return (ConsoleWidget*)cs;
 }

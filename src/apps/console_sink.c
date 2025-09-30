@@ -42,3 +42,12 @@ void con_sink_commit(ConsoleSink* s, int user_id){
         con_processor_on_command(s->proc, cmd); /* ответы → история */
     }
 }
+
+void con_sink_widget_message(ConsoleSink* s, int user_id,
+                             ConItemId id, const char* tag,
+                             const void* data, size_t size){
+    (void)user_id;
+    if (!s) return;
+    /* М4 loopback: сразу в Store → Widget */
+    con_store_widget_message(s->store, id, tag, data, size);
+}

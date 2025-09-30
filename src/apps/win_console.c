@@ -226,7 +226,7 @@ static void console_on_event(Window *w, void* wm, const InputEvent *e, int lx, i
         const char *p = e->text.text;
         while (*p){
             char buf[2] = { *p++, 0 };
-            con_sink_submit_text(st->sink, e->user_id, e->text.text);
+            con_sink_submit_text(st->sink, e->user_id, buf);
             st->cursor_col++;
             if (st->cursor_col >= st->cols){
                 /* мягкий перенос строки: коммитим только в Store, без вызова процессора */
@@ -288,9 +288,10 @@ static void con_drop(Window* w, WMDrag* d, int lx, int ly){
         }
         ConsoleWidget* cw = widget_color_create(initial);
         if (cw){
-            con_store_append_widget(st->store, cw);
+            ConItemId id = con_store_append_widget(st->store, cw);
             con_store_notify_changed(st->store);
             w->invalid_all = true;
+            (void)id; /* в М4 мы ещё не отображаем ID во view, но он есть */
             d->effect = WM_DRAG_COPY;
         } else {
             d->effect = WM_DRAG_REJECT;
