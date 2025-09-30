@@ -22,7 +22,7 @@ CORE_DIR := $(SRC_DIR)/core
 GFX_DIR  := $(SRC_DIR)/gfx
 APPS_DIR := $(SRC_DIR)/apps
 PLAT_DIR := $(SRC_DIR)/platform
-INC_DIR  := include
+INC_DIR  := $(SRC_DIR)/include
 BUILD_DIR:= build
 WEB_DIR  := web
 ASSETS   := assets
@@ -40,6 +40,11 @@ SRC_GFX := \
   $(GFX_DIR)/text.c
 
 SRC_APPS := \
+  $(APPS_DIR)/global_state.c \
+  $(APPS_DIR)/widget_color.c \
+  $(APPS_DIR)/console_processor.c \
+  $(APPS_DIR)/console_store.c \
+  $(APPS_DIR)/console_sink.c \
   $(APPS_DIR)/win_paint.c \
   $(APPS_DIR)/win_square.c \
   $(APPS_DIR)/win_console.c

@@ -12,6 +12,8 @@
 #include "apps/win_paint.h"
 #include "apps/win_square.h"
 #include "apps/win_console.h"
+#include "console/store.h"
+#include "console/processor.h"
 
 #include "gfx/text.h"
 
@@ -57,7 +59,7 @@ int main(void) {
     if (text_init(font_path, 18) != 0){
         fprintf(stderr,"text init failed\n"); plat_destroy(plat); return 1;
     }
-    
+
     int sw, sh; plat_get_output_size(plat, &sw, &sh);
     WM *wm = wm_create(sw, sh);
 
@@ -78,7 +80,13 @@ int main(void) {
 
     // консоль
     static Window wcon;
-    win_console_init(&wcon, rect_make(20, sh - sh/3 - 20, sw-40, sh/3), 100);
+    /* Модель и процессор для консоли */
+    ConsoleStore* con_store = con_store_create();
+    ConsoleProcessor* con_proc = con_processor_create(con_store);
+    win_console_init(&wcon,
+                     rect_make(20, sh - sh/3 - 20, sw-40, sh/3),
+                     100,
+                     con_store, con_proc);
     wm_add(wm, &wcon);
 
     wm_damage_add(wm, rect_make(0,0,sw,sh));
@@ -95,7 +103,13 @@ int main(void) {
     }
     wm_destroy(wm);
     text_shutdown();
+
+    /* Store разделяет жизнь нескольких вьюх; освобождаем в конце программы */
+    con_processor_destroy(con_proc);
+    con_store_destroy(con_store);
+
     plat_destroy(plat);
+
     return 0;
 #else
     /* web-петля */
