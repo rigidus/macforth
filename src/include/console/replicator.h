@@ -8,6 +8,8 @@
 extern "C" {
 #endif
 
+    typedef uint64_t ConsoleId; /* идентификатор консоли/ленты */
+
     typedef enum {
         CON_OP_PUT_TEXT     = 1,
         CON_OP_BACKSPACE    = 2,
@@ -23,6 +25,7 @@ extern "C" {
         uint64_t   op_id;      /* для идемпотентности (уникален в рамках узла, см. actor_id) */
         uint64_t   hlc;        /* Hybrid Logical Clock (подготовка к CRDT/LWW) */
         uint32_t   actor_id;   /* идентификатор эмитента (узла/актора) */
+        ConsoleId  console_id; /* КУДА направлена операция (маршрутизация) */
         int        user_id;    /* источник (зарезервировано) */
         ConOpType  type;
         ConItemId  widget_id;  /* для widget_* */
@@ -46,7 +49,8 @@ extern "C" {
 
     /* Общий интерфейс */
     void replicator_destroy(Replicator*);
-    void replicator_set_confirm_listener(Replicator*, ReplicatorConfirmCb cb, void* user);
+    void replicator_set_confirm_listener(Replicator*, ConsoleId console_id, ReplicatorConfirmCb cb, void* user);
+    void replicator_publish(Replicator*, const ConOp* op);
     void replicator_publish(Replicator*, const ConOp* op);
 
     /* Конкретные «бекенды» (M8 без сети) */

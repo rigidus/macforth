@@ -13,7 +13,7 @@ extern "C" {
 
     /* M8: sink делает локальную спекуляцию и публикует операции через Replicator.
        is_listener != 0 — этот sink регистрируется как получатель «подтверждённых» op’ов. */
-    ConsoleSink* con_sink_create(ConsoleStore* store, ConsoleProcessor* proc, Replicator* repl, int is_listener);
+    ConsoleSink* con_sink_create(ConsoleStore* store, ConsoleProcessor* proc, Replicator* repl, uint64_t console_id, int is_listener);
     void         con_sink_destroy(ConsoleSink* s);
 
     /* user_id зарезервирован под М2 (мультипользовательские промпты) */

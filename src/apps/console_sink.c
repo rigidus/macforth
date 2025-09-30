@@ -18,6 +18,7 @@ struct ConsoleSink {
     ConsoleStore* store;
     ConsoleProcessor* proc;
     Replicator* repl;
+    uint64_t  console_id;
     uint64_t next_op_id;
     uint32_t actor_id;
     uint64_t last_hlc;
@@ -83,6 +84,8 @@ uint64_t con_sink_tick_hlc(ConsoleSink* s, uint64_t now_ms){
 static void on_confirm(void* user, const ConOp* op){
     ConsoleSink* s = (ConsoleSink*)user;
     if (!s || !op) return;
+    /* Доп. защита: фильтруем не свою консоль (на случай ошибочного роутинга) */
+    if (op->console_id != s->console_id) return;
     /* дубликаты от сети (или эхо) — игнорировать по op_id */
     if (applied_has(s, op->op_id)){
         return;
@@ -164,12 +167,13 @@ static void on_confirm(void* user, const ConOp* op){
     }
 }
 
-ConsoleSink* con_sink_create(ConsoleStore* store, ConsoleProcessor* proc, Replicator* repl, int is_listener){
+ConsoleSink* con_sink_create(ConsoleStore* store, ConsoleProcessor* proc, Replicator* repl, uint64_t console_id, int is_listener){
     ConsoleSink* s = (ConsoleSink*)calloc(1, sizeof(ConsoleSink));
     if (!s) return NULL;
     s->store = store;
     s->proc  = proc;
     s->repl  = repl;
+    s->console_id = console_id;
     s->next_op_id = 1;
     /* простой actor_id: смесь адреса и стартового времени */
     s->actor_id = (uint32_t)((uintptr_t)s ^ (uintptr_t)SDL_GetTicks());
@@ -179,9 +183,9 @@ ConsoleSink* con_sink_create(ConsoleStore* store, ConsoleProcessor* proc, Replic
     s->applied_n = 0;
     s->is_listener = is_listener ? 1 : 0;
     if (repl && s->is_listener){
-        replicator_set_confirm_listener(repl, on_confirm, s);
+        replicator_set_confirm_listener(repl, s->console_id, on_confirm, s);
     }
-    return s;
+        return s;
 }
 
 void con_sink_destroy(ConsoleSink* s){
@@ -200,6 +204,7 @@ void con_sink_submit_text(ConsoleSink* s, int user_id, const char* utf8){
         op.op_id   = ((uint64_t)s->actor_id<<32) | (s->next_op_id++);
         op.hlc     = con_sink_tick_hlc(s, SDL_GetTicks());
         op.actor_id= s->actor_id;
+        op.console_id = s->console_id;
         op.user_id = user_id;
         op.type = CON_OP_PUT_TEXT;
         op.data = utf8; op.size = strlen(utf8);
@@ -217,6 +222,7 @@ void con_sink_backspace(ConsoleSink* s, int user_id){
         op.op_id   = ((uint64_t)s->actor_id<<32) | (s->next_op_id++);
         op.hlc     = con_sink_tick_hlc(s, SDL_GetTicks());
         op.actor_id= s->actor_id;
+        op.console_id = s->console_id;
         op.user_id = user_id;
         op.type = CON_OP_BACKSPACE;
         pending_add(s, op.op_id);
@@ -239,6 +245,7 @@ void con_sink_commit(ConsoleSink* s, int user_id){
         op.op_id   = ((uint64_t)s->actor_id<<32) | (s->next_op_id++);
         op.hlc     = con_sink_tick_hlc(s, SDL_GetTicks());
         op.actor_id= s->actor_id;
+        op.console_id = s->console_id;
         op.user_id = user_id;
         op.type = CON_OP_COMMIT;
         op.data = (n>0)? cmd: NULL; op.size = (n>0)? (size_t)n : 0;
@@ -265,6 +272,7 @@ void con_sink_insert_text_tail(ConsoleSink* s, int user_id, const char* utf8_lin
         op.op_id   = ((uint64_t)s->actor_id<<32) | (s->next_op_id++);
         op.hlc     = con_sink_tick_hlc(s, SDL_GetTicks());
         op.actor_id= s->actor_id;
+        op.console_id = s->console_id;
         op.user_id = user_id;
         op.type    = CON_OP_INSERT_TEXT;
         op.new_item_id = new_id;
@@ -293,6 +301,7 @@ void con_sink_insert_widget_color(ConsoleSink* s, int user_id, uint8_t initial_r
         op.op_id   = ((uint64_t)s->actor_id<<32) | (s->next_op_id++);
         op.hlc     = con_sink_tick_hlc(s, SDL_GetTicks());
         op.actor_id= s->actor_id;
+        op.console_id = s->console_id;
         op.user_id = user_id;
         op.type    = CON_OP_INSERT_WIDGET;
         op.new_item_id = new_id;
@@ -321,6 +330,7 @@ void con_sink_widget_message(ConsoleSink* s, int user_id,
         op.op_id   = ((uint64_t)s->actor_id<<32) | (s->next_op_id++);
         op.hlc     = con_sink_tick_hlc(s, SDL_GetTicks());
         op.actor_id= s->actor_id;
+        op.console_id = s->console_id;
         op.user_id = user_id;
         op.type = CON_OP_WIDGET_MSG;
         op.widget_id = id;
@@ -344,6 +354,7 @@ void con_sink_widget_delta(ConsoleSink* s, int user_id,
         op.op_id   = ((uint64_t)s->actor_id<<32) | (s->next_op_id++);
         op.hlc     = con_sink_tick_hlc(s, SDL_GetTicks());
         op.actor_id= s->actor_id;
+        op.console_id = s->console_id;
         op.user_id = user_id;
         op.type = CON_OP_WIDGET_DELTA;
         op.widget_id = id;

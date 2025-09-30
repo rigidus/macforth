@@ -105,7 +105,6 @@ static void on_event(Window *w, void* wm_ptr, const InputEvent *e, int lx, int l
             int ny = w->frame.y + (e->mouse.y - (w->frame.y + w->drag.dy));
             if (nx!=w->frame.x || ny!=w->frame.y){
                 /* централизованное перемещение: отметит damage старого/нового места */
-                WM* wm = (WM*)wm_ptr;
                 wm_window_set_frame(wm, w, rect_make(nx, ny, w->frame.w, w->frame.h));
             }
         }

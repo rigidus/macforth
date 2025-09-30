@@ -9,11 +9,12 @@
 struct Replicator {
     ReplicatorConfirmCb cb;
     void* user;
+    ConsoleId cid; /* 0 = wildcard */
 };
 
 static void loop_publish(Replicator* r, const ConOp* op){
     /* Локальный «лидер»: подтверждаем сразу же (синхронно, без копий) */
-    if (r && r->cb && op) r->cb(r->user, op);
+    if (r && r->cb && op && (r->cid==0 || r->cid==op->console_id)) r->cb(r->user, op);
 }
 
 Replicator* replicator_create_authoritative_local(void){
@@ -26,9 +27,9 @@ void replicator_destroy(Replicator* r){
     free(r);
 }
 
-void replicator_set_confirm_listener(Replicator* r, ReplicatorConfirmCb cb, void* user){
+void replicator_set_confirm_listener(Replicator* r, ConsoleId console_id, ReplicatorConfirmCb cb, void* user){
     if (!r) return;
-    r->cb = cb; r->user = user;
+    r->cb = cb; r->user = user; r->cid = console_id;
 }
 
 void replicator_publish(Replicator* r, const ConOp* op){

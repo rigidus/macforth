@@ -9,6 +9,7 @@
 struct Listener {
     ReplicatorConfirmCb cb;
     void* user;
+    ConsoleId cid; /* подписка на конкретную консоль; 0 = wildcard */
 };
 
 struct Replicator {
@@ -19,7 +20,7 @@ struct Replicator {
 static void fanout_publish(Replicator* r, const ConOp* op){
     if (!r || !op) return;
     for (int i=0;i<r->n;i++){
-        if (r->ls[i].cb){
+        if (r->ls[i].cb && (r->ls[i].cid==0 || r->ls[i].cid==op->console_id)){
             r->ls[i].cb(r->ls[i].user, op);
         }
     }
@@ -35,11 +36,12 @@ void replicator_destroy(Replicator* r){
     free(r);
 }
 
-void replicator_set_confirm_listener(Replicator* r, ReplicatorConfirmCb cb, void* user){
+void replicator_set_confirm_listener(Replicator* r, ConsoleId console_id, ReplicatorConfirmCb cb, void* user){
     if (!r || !cb) return;
     if (r->n < REPL_MAX_LISTENERS){
         r->ls[r->n].cb = cb;
         r->ls[r->n].user = user;
+        r->ls[r->n].cid  = console_id;
         r->n++;
     }
 }

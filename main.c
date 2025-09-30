@@ -85,11 +85,13 @@ int main(void) {
     ConsoleProcessor* con_proc  = con_processor_create(con_store);
     /* Репликатор (локальный «лидер» в том же процессе) */
     Replicator*       repl      = replicator_create_crdt_local();
+    /* Выделим идентификатор ленты/консоли (для одного demo — просто 1) */
+    uint64_t console_id = 1;
 
     /* sink для промптов (публикует, но не слушает подтверждения) */
-    ConsoleSink* con_sink_for_prompts = con_sink_create(con_store, con_proc, repl, 0);
+    ConsoleSink* con_sink_for_prompts = con_sink_create(con_store, con_proc, repl, console_id, 0);
     /* sink для консоли (и публикует, и слушает подтверждения → reconcile) */
-    ConsoleSink* con_sink_for_console = con_sink_create(con_store, con_proc, repl, 1);
+    ConsoleSink* con_sink_for_console = con_sink_create(con_store, con_proc, repl, console_id, 1);
 
     /* окно с двумя промптами (user_1=0, user_2=1) */
     static Window wprompts;
