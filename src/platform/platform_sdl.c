@@ -11,6 +11,9 @@ struct Platform {
     SDL_Surface *screen;   // window surface
     Surface     *back;     // ARGB backbuffer we composite into
     uint32_t     last_present_ms;
+    /* --- эмуляция multi-user для демо: активный uid выбираем кликом по половине экрана --- */
+    int          active_uid;   /* 0 или 1 */
+    int          last_mx, last_my;
 };
 
 uint32_t plat_now_ms(void){ return SDL_GetTicks(); }
@@ -30,6 +33,9 @@ Platform* plat_create(const char *title, int w, int h){
     pf->win = win;
     pf->screen = SDL_GetWindowSurface(win);
     pf->back   = surface_create_argb(pf->screen->w, pf->screen->h);
+    /* init multi-user emu */
+    pf->active_uid = 0;
+    pf->last_mx = pf->last_my = 0;
     surface_fill(pf->back, 0xFF000000);
     return pf;
 }
@@ -50,21 +56,23 @@ void plat_get_output_size(Platform* pf, int *w, int *h){
 }
 
 bool plat_poll_events_and_dispatch(Platform* pf, WM* wm){
-    (void)pf;
     SDL_Event e;
     while (SDL_PollEvent(&e)){
         if (e.type==SDL_QUIT) return false;
 
-        InputEvent ie={0}; ie.user_id=0;
+        InputEvent ie={0};
+        ie.user_id = pf->active_uid; /* по умолчанию — текущий активный uid */
         switch (e.type){
         case SDL_KEYDOWN:
             if (e.key.keysym.sym == SDLK_ESCAPE) return false;
             ie.type=1; ie.key.sym=(int)e.key.keysym.sym; ie.key.repeat=e.key.repeat;
+            ie.user_id = pf->active_uid;
             input_route_key(wm, &ie);
             break;
 
         case SDL_TEXTINPUT:
             ie.type=2; SDL_strlcpy(ie.text.text, e.text.text, sizeof(ie.text.text));
+            ie.user_id = pf->active_uid;
             input_route_text(wm, &ie);
             break;
 
@@ -75,6 +83,13 @@ bool plat_poll_events_and_dispatch(Platform* pf, WM* wm){
             ie.mouse.y = (e.type==SDL_MOUSEBUTTONDOWN||e.type==SDL_MOUSEBUTTONUP) ? e.button.y : 0;
             ie.mouse.button = (int)e.button.button; /* реальные коды SDL_BUTTON_* */
             ie.mouse.state  = (e.type==SDL_MOUSEBUTTONDOWN) ? 1 : 0;
+            /* обновим "последнюю" позицию и выберем активного пользователя по клику ЛКМ */
+            pf->last_mx = ie.mouse.x; pf->last_my = ie.mouse.y;
+            if (e.type==SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT && pf->screen){
+                pf->active_uid = (e.button.x > pf->screen->w/2) ? 1 : 0;
+            }
+            ie.user_id = pf->active_uid;
+            /* route */
             input_route_mouse(wm, &ie);
             break;
 
@@ -83,11 +98,16 @@ bool plat_poll_events_and_dispatch(Platform* pf, WM* wm){
             ie.mouse.x = e.motion.x; ie.mouse.y = e.motion.y;
             ie.mouse.dx = e.motion.xrel; ie.mouse.dy = e.motion.yrel;
             ie.mouse.buttons = (e.motion.state & SDL_BUTTON_LMASK)?1:0; // бит0 = ЛКМ
+            pf->last_mx = ie.mouse.x; pf->last_my = ie.mouse.y;
+            ie.user_id = pf->active_uid;
+            /* route */
             input_route_mouse(wm, &ie);
             break;
 
         case SDL_MOUSEWHEEL:
             ie.type=5; ie.mouse.wheel_y = e.wheel.y;
+            ie.user_id = pf->active_uid;
+            /* route */
             input_route_mouse(wm, &ie);
             break;
 
@@ -113,7 +133,7 @@ bool plat_poll_events_and_dispatch(Platform* pf, WM* wm){
 void plat_compose_and_present(Platform* pf, WM* wm){
     int n = wm_damage_count(wm);
     bool anim = wm_any_animating(wm) || wm_any_drag_active(wm); /* dnd требует редрав без damage */
-    
+
     if (n==0 && !anim) return;
 
     uint32_t t = plat_now_ms();
@@ -182,7 +202,7 @@ void plat_compose_and_present(Platform* pf, WM* wm){
                 }
             }
         }
-        
+
         SDL_BlitSurface(pf->back->s, &r, pf->screen, &r);
     }
 
