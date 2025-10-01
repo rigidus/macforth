@@ -66,6 +66,16 @@ bool plat_poll_events_and_dispatch(Platform* pf, WM* wm){
         case SDL_KEYDOWN:
             if (e.key.keysym.sym == SDLK_ESCAPE) return false;
             ie.type=1; ie.key.sym=(int)e.key.keysym.sym; ie.key.repeat=e.key.repeat;
+            /* Перенос модификаторов в абстрактные биты */
+            {
+                SDL_Keymod m = SDL_GetModState();
+                int mods = 0;
+                if (m & (KMOD_LCTRL|KMOD_RCTRL))   mods |= KEYMOD_CTRL;
+                if (m & (KMOD_LSHIFT|KMOD_RSHIFT)) mods |= KEYMOD_SHIFT;
+                if (m & (KMOD_LALT|KMOD_RALT))     mods |= KEYMOD_ALT;
+                if (m & (KMOD_LGUI|KMOD_RGUI))     mods |= KEYMOD_GUI;
+                ie.key.mods = mods;
+            }
             ie.user_id = pf->active_uid;
             input_route_key(wm, &ie);
             break;

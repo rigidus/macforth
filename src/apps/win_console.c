@@ -46,15 +46,24 @@ typedef struct {
     int   drag_start_mx;    /* экранные координаты press для порога */
     int   drag_start_my;
     int   drag_src_index;   /* индекс строки истории под курсором при press */
+    int        drag_is_placeholder;            /* 1 если источником служит плейсхолдер */
+    ConItemId  pending_placeholder_id;         /* для click-активации, если drag не стартовал */
+    char       drag_text_buf[CON_MAX_LINE];    /* текст для DnD из плейсхолдера */
 
     ConsolePrompt* prompt;  /* единственный промпт внизу */
     int            prompt_user_id;
     int            top_h;   /* всегда 0 */
     int            bot_h;   /* высота области промпта */
+    /* ---- Lazy mode (per-view) ---- */
+    LazyMode   lazy_mode;
+    ConItemId  active_for_user[WM_MAX_USERS];  /* какой widget активен у каждого user на этой вьюхе */
+    int        chord_stage[WM_MAX_USERS];      /* 0 – нет, 1 – C-x, 2 – C-x w (ждём g) */
 } ConsoleViewState;
 
 /* ---------- utils ---------- */
 
+/* fwd: используем ниже до определения */
+static void draw_border_rect(Surface* dst, int x,int y,int w,int h, uint32_t col);
 
 static void console_measure(ConsoleViewState *st, int win_w, int win_h){
     int wM=0, hM=0;
@@ -138,7 +147,26 @@ static void s_draw_history_row(Window* w, ConsoleViewState* st, const HistoryLay
     surface_fill_rect(w->cache, 0, y, st->cols*st->cell_w, st->cell_h, st->col_bg);
     ConsoleWidget* cw = con_store_get_widget(st->store, idx);
     if (cw && cw->draw){
-        cw->draw(cw, w->cache, 0, y, st->cols*st->cell_w, st->cell_h, st->col_fg);
+        /* ленивый плейсхолдер? */
+        ConItemId id = con_store_get_id(st->store, idx);
+        int is_active = (st->active_for_user[st->prompt_user_id] == id);
+        int show_placeholder = (st->lazy_mode != LAZY_OFF) && !is_active;
+        if (st->lazy_mode == LAZY_ALWAYS_TEXT) show_placeholder = 1;
+        if (show_placeholder){
+            /* затемнённая плашка + текстовое представление виджета */
+            uint32_t plate = 0xFF141414; /* тёмно-серая плашка на чёрном фоне */
+            surface_fill_rect(w->cache, 0, y, st->cols*st->cell_w, st->cell_h, plate);
+            char buf[128]; buf[0]=0;
+            const char* t = cw->as_text ? cw->as_text(cw, buf, (int)sizeof(buf)) : "[widget]";
+            draw_line_text(w->cache, 6, y + baseline_off, t ? t : "[widget]", 0xFFCCCCCC);
+            /* рамка: неактивный — приглушённая */
+            draw_border_rect(w->cache, 0, y, st->cols*st->cell_w, st->cell_h, 0xFF353535);
+        } else {
+            /* активен — рисуем интерактив и яркую рамку пользователя */
+            cw->draw(cw, w->cache, 0, y, st->cols*st->cell_w, st->cell_h, st->col_fg);
+            uint32_t bcol = USER_COLORS[st->prompt_user_id & 1];
+            draw_border_rect(w->cache, 0, y, st->cols*st->cell_w, st->cell_h, bcol);
+        }
     } else {
         const char *s = con_store_get_line(st->store, idx);
         if (!s) s = "";
@@ -148,8 +176,11 @@ static void s_draw_history_row(Window* w, ConsoleViewState* st, const HistoryLay
         if (uid==0) col = USER_COLORS[0];
         else if (uid==1) col = USER_COLORS[1];
         draw_line_text(w->cache, 0, y + baseline_off, s, col);
+        /* для обычных текстовых строк рамку не рисуем */
     }
 }
+
+
 
 
 static void draw_border_rect(Surface* dst, int x,int y,int w,int h, uint32_t col){
@@ -274,6 +305,38 @@ static void on_store_changed(void* user){
     w->invalid_all = true;
 }
 
+/* --- утилита: инвалидация строки по ID --- */
+static void invalidate_item_by_id(Window* w, ConsoleViewState* st, ConItemId id){
+    if (!id) return;
+    int idx = con_store_find_index_by_id(st->store, id);
+    if (idx < 0) return;
+    HistoryLayout L = layout_compute(st);
+    if (idx < L.start_index || idx >= L.start_index + L.history_rows) return;
+    int row = idx - L.start_index;
+    int y = st->top_h + row * st->cell_h;
+    Rect r = rect_make(w->frame.x, w->frame.y + y, st->cols*st->cell_w, st->cell_h);
+    window_invalidate(w, r);
+    w->invalid_all = true;
+}
+
+/* --- обработка chord'а C-x w g (per-user) --- */
+static int handle_chord_maybe(Window* w, ConsoleViewState* st, int uid, const InputEvent* e){
+    if (e->type != 1) return 0;
+    int stage = st->chord_stage[uid];
+    if ((e->key.mods & KEYMOD_CTRL) && e->key.sym == SDLK_x){
+        st->chord_stage[uid] = 1; return 1;
+    }
+    if (stage == 1 && e->key.sym == SDLK_w){ st->chord_stage[uid] = 2; return 1; }
+    if (stage == 2 && e->key.sym == SDLK_g){
+        st->chord_stage[uid] = 0;
+        ConItemId prev = st->active_for_user[uid];
+        if (prev){ st->active_for_user[uid] = 0; invalidate_item_by_id(w, st, prev); }
+        return 1;
+    }
+    /* любой другой keydown сбрасывает стадию */
+    st->chord_stage[uid] = 0; return 0;
+}
+
 /* ---------- ввод ---------- */
 
 static void console_on_event(Window *w, void* wm, const InputEvent *e, int lx, int ly){
@@ -284,6 +347,13 @@ static void console_on_event(Window *w, void* wm, const InputEvent *e, int lx, i
 
     int H = surface_h(w->cache);
     int in_bot_prompt = (ly >= H - st->bot_h && ly < H);
+
+    /* Chord «C-x w g» — сворачивание активного виджета для данного user_id */
+    if (e->type==1 && e->user_id == st->prompt_user_id){
+        if (handle_chord_maybe(w, st, e->user_id, e)){
+            return; /* chord съеден */
+        }
+    }
 
     /* Клавиатура/текст - привязка к промпту по user_id (0 → верх, 1 → низ) */
     if (e->type==1 || e->type==2){
@@ -300,7 +370,37 @@ static void console_on_event(Window *w, void* wm, const InputEvent *e, int lx, i
         int idx = (!in_bot_prompt) ? layout_hit_item(st, lx, ly, &cell_x, &cell_y) : -1;
         if (idx >= 0){
             ConsoleWidget* cw = con_store_get_widget(st->store, idx);
+            ConItemId wid2 = con_store_get_id(st->store, idx);
             if (cw && cw->on_event){
+                /* ленивый режим: если виджет не активен — клик активирует,
+                   но даём возможность начать DnD текста из плейсхолдера. */
+                int is_active = (st->active_for_user[e->user_id] == wid2);
+                int is_placeholder = 0;
+                if (st->lazy_mode != LAZY_OFF && !is_active) {
+                    if (st->lazy_mode == LAZY_ALWAYS_TEXT) {
+                        is_placeholder = 1; /* активировать нельзя */
+                    } else {
+                        is_placeholder = 1; /* может активироваться по click */
+                    }
+                }
+                /* --- placeholder как текстовая строка: даём DnD-источник и активацию по click --- */
+                if (is_placeholder){
+                    if (e->type==3 && e->mouse.button==1 && e->mouse.state==1){
+                        /* arm DnD + помним, что это placeholder, чтобы по отпусканию активировать */
+                        st->drag_arm = 1;
+                        st->drag_start_mx = e->mouse.x; st->drag_start_my = e->mouse.y;
+                        st->drag_src_index = idx;
+                        st->drag_is_placeholder = 1;
+                        st->pending_placeholder_id = (st->lazy_mode==LAZY_TEXT_UNTIL_CLICK)? wid2 : 0;
+                        /* подготовим текст для возможного DnD */
+                        char tmp[128]; tmp[0]=0;
+                        const char* t = cw->as_text ? cw->as_text(cw, tmp, (int)sizeof(tmp)) : "[widget]";
+                        SDL_strlcpy(st->drag_text_buf, t ? t : "[widget]", sizeof(st->drag_text_buf));
+                        return;
+                    }
+                    /* мышь/колёса поверх плейсхолдера внутрь виджета не пускаем */
+                    return;
+                }
                 int wx = lx - cell_x;
                 int wy = ly - cell_y;
                 int changed = cw->on_event(cw, e, wx, wy, st->cols*st->cell_w, st->cell_h);
@@ -349,19 +449,41 @@ static void console_on_event(Window *w, void* wm, const InputEvent *e, int lx, i
             int cell_x=0, cell_y=0;
             int idx = (!in_bot_prompt) ? layout_hit_item(st, lx, ly, &cell_x, &cell_y) : -1;
             if (idx >= 0){
-                /* не стартуем drag для строк-виджетов */
                 ConsoleWidget* cw = con_store_get_widget(st->store, idx);
-                if (!cw){
+                ConItemId wid = con_store_get_id(st->store, idx);
+                int is_active = (cw && st->active_for_user[e->user_id] == wid);
+                int is_placeholder = (cw && st->lazy_mode != LAZY_OFF && !is_active) ? 1 : 0;
+                /* Разрешаем drag либо для текстовых строк, либо для плейсхолдера */
+                if (!cw || is_placeholder){
                     st->drag_arm = 1;
                     st->drag_start_mx = e->mouse.x;
                     st->drag_start_my = e->mouse.y;
                     st->drag_src_index = idx;
+                    st->drag_is_placeholder = is_placeholder;
+                    if (is_placeholder){
+                        /* подготовлено выше в ветке обработчика — но если пришли сюда впервые, продублируем */
+                        char tmp[128]; tmp[0]=0;
+                        const char* t = cw && cw->as_text ? cw->as_text(cw, tmp, (int)sizeof(tmp)) : "[widget]";
+                        SDL_strlcpy(st->drag_text_buf, t ? t : "[widget]", sizeof(st->drag_text_buf));
+                        st->pending_placeholder_id = (st->lazy_mode==LAZY_TEXT_UNTIL_CLICK)? wid : 0;
+                    } else {
+                        st->pending_placeholder_id = 0;
+                    }
                 }
             }
         } else if (e->mouse.button==1 && e->mouse.state==0){
             /* отпускание — если не стартовали dnd, просто сбросить arm */
+            if (st->drag_arm && st->drag_is_placeholder && st->pending_placeholder_id){
+                /* Click без drag — активируем этот виджет в этой вьюхе для данного user */
+                ConItemId prev = st->active_for_user[e->user_id];
+                st->active_for_user[e->user_id] = st->pending_placeholder_id;
+                invalidate_item_by_id(w, st, st->pending_placeholder_id);
+                if (prev && prev != st->pending_placeholder_id) invalidate_item_by_id(w, st, prev);
+            }
             st->drag_arm = 0;
             st->drag_src_index = -1;
+            st->drag_is_placeholder = 0;
+            st->pending_placeholder_id = 0;
         }
     } else if (e->type==4 && (e->mouse.buttons & 1)){
         if (st->drag_arm){
@@ -372,7 +494,10 @@ static void console_on_event(Window *w, void* wm, const InputEvent *e, int lx, i
                 int idx = st->drag_src_index;
                 const char* line = NULL;
                 size_t line_len = 0;
-                if (idx >= 0 && idx < con_store_count(st->store)){
+                if (st->drag_is_placeholder){
+                    line = st->drag_text_buf;
+                    line_len = SDL_strlen(st->drag_text_buf);
+                } else if (idx >= 0 && idx < con_store_count(st->store)){
                     line = con_store_get_line(st->store, idx);
                     line_len = (size_t)con_store_get_line_len(st->store, idx);
                 }
@@ -386,8 +511,8 @@ static void console_on_event(Window *w, void* wm, const InputEvent *e, int lx, i
                                   prev, hot, hot);
                     /* примечание: prev освободится на wm_end_drag() */
                 }
-                st->drag_arm = 0;
-                st->drag_src_index = -1;
+                st->drag_is_placeholder = 0;
+                st->pending_placeholder_id = 0;
                 /* дальше событие будет обрабатываться протоколом DnD в input_route_mouse */
                 return;
             }
@@ -509,6 +634,12 @@ static const WindowVTable V = {
 };
 
 
+void win_console_set_lazy_mode(Window* w, LazyMode mode){
+    if (!w || !w->user) return;
+    ConsoleViewState* st = (ConsoleViewState*)w->user;
+    st->lazy_mode = mode; w->invalid_all = true;
+}
+
 void win_console_init(Window *w, Rect frame, int z, ConsoleStore* store, ConsoleProcessor* proc, ConsoleSink* sink, int prompt_user_id){
     window_init(w, "console", frame, z, &V);
 
@@ -536,6 +667,14 @@ void win_console_init(Window *w, Rect frame, int z, ConsoleStore* store, Console
     st->prompt_user_id = prompt_user_id;
     st->prompt = con_prompt_create(prompt_user_id, sink, store);
     /* цвета промптов можно оставить дефолтными — бордеры рисуем сами */
+
+    /* Lazy: по умолчанию выключен, карты активностей/аккордов — нули */
+    st->lazy_mode = LAZY_OFF;
+    for (int i=0;i<WM_MAX_USERS;i++){ st->active_for_user[i]=0; st->chord_stage[i]=0; }
+    st->drag_is_placeholder = 0;
+    st->pending_placeholder_id = 0;
+    st->drag_arm = 0;
+    st->drag_src_index = -1;
 
     st->dirty_rows_mask = 0;
 

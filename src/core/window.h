@@ -22,12 +22,18 @@ typedef struct {
     int user_id;
     int type; // 1=KEYDOWN,2=TEXT,3=MBUTTON,4=MMOTION,5=MWHEEL,6=WIN
     union {
-        struct { int sym; int repeat; } key;
+        struct { int sym; int repeat; int mods; } key;
         struct { char text[32]; } text;
         struct { int x,y; int button; int state; int buttons; int dx,dy; int wheel_y; } mouse;
         struct { int event; int w,h; } win; // 1=RESIZE,2=EXPOSE
     };
 } InputEvent;
+
+/* Биты модификаторов (абстракция поверх платформы/SDL) */
+#define KEYMOD_CTRL   (1<<0)
+#define KEYMOD_SHIFT  (1<<1)
+#define KEYMOD_ALT    (1<<2)
+#define KEYMOD_GUI    (1<<3)
 
 struct Window;
 

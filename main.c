@@ -109,6 +109,9 @@ int main(void) {
                      con_store, con_proc, con_sink, 1 /* user_1 */);
     wm_add(wm, &wcon1);
 
+    /* Демонстрация: правая консоль лениво показывает виджеты строкой до клика */
+    win_console_set_lazy_mode(&wcon1, LAZY_TEXT_UNTIL_CLICK);
+
     wm_damage_add(wm, rect_make(0,0,sw,sh));
     plat_compose_and_present(plat, wm);
 
