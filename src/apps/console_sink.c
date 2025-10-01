@@ -15,19 +15,11 @@
 #define CON_SINK_APPLIED_MAX 512
 #endif
 
-/* ===== М10: простой cache init_blob по контент-хэшу (FNV-1a 64) ===== */
 typedef struct {
     uint64_t h;
     void*    data;
     size_t   size;
 } BlobEnt;
-
-#ifndef CON_SINK_BLOB_MAX
-#define CON_SINK_BLOB_MAX 64
-#endif
-
-static BlobEnt g_blob_cache[CON_SINK_BLOB_MAX];
-static int     g_blob_n = 0;
 
 static uint64_t fnv1a64(const void* p, size_t n){
     const uint8_t* b = (const uint8_t*)p;
@@ -35,22 +27,34 @@ static uint64_t fnv1a64(const void* p, size_t n){
     for (size_t i=0;i<n;i++){ h ^= b[i]; h *= 1099511628211ull; }
     return h;
 }
-static void blob_put(uint64_t h, const void* data, size_t size){
-    if (!h || !data || !size) return;
-    int idx = (g_blob_n < CON_SINK_BLOB_MAX) ? g_blob_n++ : (g_blob_n-1);
-    if (g_blob_n >= CON_SINK_BLOB_MAX) { /* LRU-наивно: сдвиг */
-        memmove(&g_blob_cache[0], &g_blob_cache[1], (CON_SINK_BLOB_MAX-1)*sizeof(BlobEnt));
+
+
+#ifndef CON_SINK_BLOB_MAX
+#define CON_SINK_BLOB_MAX 64
+#endif
+
+typedef struct {
+    BlobEnt arr[CON_SINK_BLOB_MAX];
+    int     n;
+} BlobCache;
+
+static void blob_put_local(BlobCache* bc, uint64_t h, const void* data, size_t size){
+    if (!bc || !h || !data || !size) return;
+    int idx = (bc->n < CON_SINK_BLOB_MAX) ? bc->n++ : (bc->n-1);
+    if (bc->n >= CON_SINK_BLOB_MAX) { /* LRU-наивно: сдвиг */
+        memmove(&bc->arr[0], &bc->arr[1], (CON_SINK_BLOB_MAX-1)*sizeof(BlobEnt));
         idx = CON_SINK_BLOB_MAX-1;
     }
-    g_blob_cache[idx].h = h;
-    g_blob_cache[idx].data = malloc(size);
-    if (g_blob_cache[idx].data){ memcpy(g_blob_cache[idx].data, data, size); g_blob_cache[idx].size = size; }
-}
-static const BlobEnt* blob_get(uint64_t h){
-    for (int i=0;i<g_blob_n;i++) if (g_blob_cache[i].h == h) return &g_blob_cache[i];
-    return NULL;
+    bc->arr[idx].h = h;
+    bc->arr[idx].data = malloc(size);
+    if (bc->arr[idx].data){ memcpy(bc->arr[idx].data, data, size); bc->arr[idx].size = size; }
 }
 
+static const BlobEnt* blob_get_local(const BlobCache* bc, uint64_t h){
+    if (!bc || !h) return NULL;
+    for (int i=0;i<bc->n;i++) if (bc->arr[i].h == h) return &bc->arr[i];
+    return NULL;
+}
 
 struct ConsoleSink {
     ConsoleStore* store;
@@ -68,6 +72,8 @@ struct ConsoleSink {
     /* Идемпотентность на уровне приёмника: уже применённые op_id */
     uint64_t applied[CON_SINK_APPLIED_MAX];
     int applied_n;
+    /* Локальный кэш init_blob по контент-хэшу (пер-инстанс) */
+    BlobCache blobs;
 };
 
 static int pending_has(ConsoleSink* s, uint64_t id){
@@ -170,8 +176,8 @@ static void on_confirm(void* user, const ConOp* op){
                 if (op->init_blob && op->init_size>=1){
                     init = *(const uint8_t*)op->init_blob;
                 } else if (op->init_hash){
-                    /* попробуем достать init из локального blob-кэша */
-                    const BlobEnt* be = blob_get(op->init_hash);
+                    /* попробуем достать init из ЛОКАЛЬНОГО blob-кэша sink’а */
+                    const BlobEnt* be = blob_get_local(&s->blobs, op->init_hash);
                     if (be && be->size>=1) init = *(const uint8_t*)be->data;
                 }
                 w = widget_color_create(init);
@@ -207,6 +213,7 @@ ConsoleSink* con_sink_create(ConsoleStore* store, ConsoleProcessor* proc, Replic
     s->pending_n = 0;
     s->applied_n = 0;
     s->is_listener = is_listener ? 1 : 0;
+    memset(&s->blobs, 0, sizeof(s->blobs));
     if (repl && s->is_listener){
         replicator_set_confirm_listener(repl, s->console_id, on_confirm, s);
     }
@@ -351,7 +358,9 @@ void con_sink_insert_widget_color(ConsoleSink* s, int user_id, uint8_t initial_r
         uint8_t init   = initial_r0_255;
         op.init_blob = &init; op.init_size = 1;
         op.init_hash = fnv1a64(&init, 1);
-        blob_put(op.init_hash, &init, 1);
+        blob_put_local(&s->blobs, op.init_hash, &init, 1);
+        /* класть в локальный кэш инстанса sink’а */
+        blob_put_local(&s->blobs, op.init_hash, &init, 1);
         pending_add(s, op.op_id);
         replicator_publish(s->repl, &op);
     }
