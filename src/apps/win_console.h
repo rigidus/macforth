@@ -4,5 +4,6 @@
 #include "console/processor.h"
 #include "console/sink.h"
 
-/* sink теперь передаётся извне (не создаётся внутри) */
-void win_console_init(Window *w, Rect frame, int z, ConsoleStore* store, ConsoleProcessor* proc, ConsoleSink* sink);
+/* Вариант на одного пользователя-промпт внизу: общий Store + индивидуальный prompt_user_id */
+void win_console_init(Window *w, Rect frame, int z,
+                      ConsoleStore* store, ConsoleProcessor* proc, ConsoleSink* sink, int prompt_user_id);

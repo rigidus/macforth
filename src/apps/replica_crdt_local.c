@@ -60,6 +60,7 @@ void replicator_publish(Replicator* r, const ConOp* op){
         copy_init = malloc(op->init_size);
         if (copy_init){ memcpy(copy_init, op->init_blob, op->init_size); tmp.init_blob = copy_init; }
     }
+    /* init_hash просто копируется по значению в tmp */
     fanout_publish(r, &tmp);
     free(copy_data);
     free(copy_init);

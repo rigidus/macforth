@@ -39,6 +39,7 @@ extern "C" {
         uint32_t   widget_kind;    /* 1=ColorSlider, … */
         const void* init_blob;
         size_t      init_size;
+        uint64_t    init_hash;     /* контент-адрес (FNV-1a 64) для init_blob */
     } ConOp;
 
     typedef struct Replicator Replicator;
@@ -47,10 +48,10 @@ extern "C" {
     /* Общий интерфейс */
     void replicator_destroy(Replicator*);
     void replicator_set_confirm_listener(Replicator*, ConsoleId console_id, ReplicatorConfirmCb cb, void* user);
-    void replicator_publish(Replicator*, const ConOp* op);
+    /* publish гарантированно копирует payload'ы (data/init_blob), см. реализации */
     void replicator_publish(Replicator*, const ConOp* op);
 
-    /* Конкретные «бекенды» (M8 без сети) */
+    /* Конкретные «бекенды» */
     Replicator* replicator_create_authoritative_local(void);
     Replicator* replicator_create_crdt_local(void); /* локальный gossip с несколькими слушателями */
 

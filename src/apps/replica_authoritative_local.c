@@ -53,6 +53,7 @@ void replicator_publish(Replicator* r, const ConOp* op){
         copy2 = malloc(op->init_size);
         if (copy2){ memcpy(copy2, op->init_blob, op->init_size); tmp.init_blob = copy2; }
     }
+    /* init_hash копируется по значению */
     loop_publish(r, &tmp);
     free(copy);
     free(copy2);

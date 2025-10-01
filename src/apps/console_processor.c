@@ -1,5 +1,6 @@
 #include "console/processor.h"
 #include "console/store.h"
+#include "console/sink.h"
 #include "apps/widget_color.h"
 #include <SDL.h>
 #include <string.h>
@@ -9,6 +10,7 @@
 
 struct ConsoleProcessor {
     ConsoleStore* store;
+    ConsoleSink*  sink;  /* публикация ответов/виджетов через Sink */
 };
 
 /* вспомогательное — распечатать список виджетов с их ID (последние N) */
@@ -23,14 +25,14 @@ static void cmd_widgets(ConsoleProcessor* p){
         char buf[64]; buf[0]=0;
         const char* text = w->as_text? w->as_text(w, buf, (int)sizeof(buf)) : "[widget]";
         SDL_snprintf(line, sizeof(line), "widget id=%" PRIu64 " %s", (uint64_t)id, text?text:"");
-        con_store_append_line(p->store, line);
+        if (p->sink) con_sink_append_line(p->sink, -1, line);
         shown++;
     }
-    if (shown==0) con_store_append_line(p->store, "(no widgets in recent history)");
+    if (shown==0 && p->sink) con_sink_append_line(p->sink, -1, "(no widgets in recent history)");
 }
 
 static void reply(ConsoleProcessor* p, const char* s){
-    con_store_append_line(p->store, s ? s : "");
+    if (p->sink) con_sink_append_line(p->sink, -1, s ? s : "");
 }
 
 /* color set <id> <0..255> */
@@ -38,7 +40,7 @@ static void cmd_color_set(ConsoleProcessor* p, const char* s){
     ConItemId id = 0; int val = -1;
     if (sscanf(s, "%" SCNu64 " %d", (uint64_t*)&id, &val) != 2){ reply(p, "usage: color set <id> <0..255>"); return; }
     if (val<0 || val>255){ reply(p, "value must be 0..255"); return; }
-    con_store_widget_message(p->store, id, "set", &val, sizeof(val));
+    if (p->sink) con_sink_widget_message(p->sink, -1, id, "set", &val, sizeof(val));
 }
 
 ConsoleProcessor* con_processor_create(ConsoleStore* store){
@@ -52,6 +54,8 @@ void con_processor_destroy(ConsoleProcessor* p){
     if (!p) return;
     free(p);
 }
+
+void con_processor_set_sink(ConsoleProcessor* p, ConsoleSink* s){ if (p) p->sink = s; }
 
 static void trim_leading(const char** p){
     const char* s = *p;
@@ -87,9 +91,8 @@ void con_processor_on_command(ConsoleProcessor* p, const char* line){
         return;
     }
     if (starts_with(s, "color")){
-        /* Локальная вставка виджета (совместимость; можно перевести на sink позднее) */
-        ConsoleWidget* w = widget_color_create(128);
-        if (w) con_store_append_widget(p->store, w);
+        /* вставляем виджет через Sink (реплицируемо, якоря/CRDT) */
+        if (p->sink) con_sink_insert_widget_color_between(p->sink, -1, con_store_last_id(p->store), 0, 128);
         return;
     }
     if (starts_with(s, "widgets")){

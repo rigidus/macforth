@@ -13,6 +13,7 @@
 #include "apps/win_square.h"
 #include "apps/win_console.h"
 #include "console/store.h"
+#include "console/sink.h"
 #include "console/processor.h"
 #include "console/replicator.h"
 
@@ -87,20 +88,26 @@ int main(void) {
     /* Выделим идентификатор ленты/консоли (для одного demo — просто 1) */
     uint64_t console_id = 1;
 
-    /* единый sink для консоли (и публикует, и слушает подтверждения) */
-    ConsoleSink* con_sink_for_console = con_sink_create(con_store, con_proc, repl,  console_id, 1);
+    /* Sink: локальная спекуляция + подтверждения от репликатора */
+    ConsoleSink*      con_sink  = con_sink_create(con_store, con_proc, repl, console_id, /*is_listener=*/1);
+    /* Процессор публикует ответы через sink */
+    con_processor_set_sink(con_proc, con_sink);
 
-
-    // консоль
-    static Window wcon;
-
-    /* Модель и процессор для консоли */
-    win_console_init(&wcon,
-                     rect_make(20, sh - sh/3 - 20, sw-40, sh/3),
+    /* Две вьюхи консоли, общее состояние, разные промпты (оба внизу) */
+    static Window wcon0, wcon1;
+    int con_h = sh/3;
+    /* первая — снизу слева (user 0) */
+    win_console_init(&wcon0,
+                     rect_make(20, sh - con_h - 20, (sw-60)/2, con_h),
                      100,
-                     con_store, con_proc, con_sink_for_console);
-
-    wm_add(wm, &wcon);
+                     con_store, con_proc, con_sink, 0 /* user_0 */);
+    wm_add(wm, &wcon0);
+    /* вторая — снизу справа (user 1) */
+    win_console_init(&wcon1,
+                     rect_make(40 + (sw-60)/2, sh - con_h - 20, (sw-60)/2, con_h),
+                     101,
+                     con_store, con_proc, con_sink, 1 /* user_1 */);
+    wm_add(wm, &wcon1);
 
     wm_damage_add(wm, rect_make(0,0,sw,sh));
     plat_compose_and_present(plat, wm);
@@ -117,10 +124,8 @@ int main(void) {
     wm_destroy(wm);
     text_shutdown();
 
-
-
     /* Sink консоли */
-    con_sink_destroy(con_sink_for_console);
+    con_sink_destroy(con_sink);
 
     /* Store разделяет жизнь нескольких вьюх; освобождаем в конце программы */
     con_processor_destroy(con_proc);

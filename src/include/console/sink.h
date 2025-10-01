@@ -11,29 +11,38 @@ extern "C" {
 
     typedef struct ConsoleSink ConsoleSink;
 
-    /* M8: sink делает локальную спекуляцию и публикует операции через Replicator.
-       is_listener != 0 — этот sink регистрируется как получатель «подтверждённых» op’ов. */
+    /* sink делает локальную спекуляцию и публикует операции через Replicator.
+       is_listener != 0 — этот sink регистрируется как получатель «подтверждённых» op-ов. */
     ConsoleSink* con_sink_create(ConsoleStore* store, ConsoleProcessor* proc, Replicator* repl, uint64_t console_id, int is_listener);
     void         con_sink_destroy(ConsoleSink* s);
 
-    /* user_id зарезервирован под М2 (мультипользовательские промпты) */
+    /* user_id - мультипользовательские промпты */
     void con_sink_submit_text(ConsoleSink*, int user_id, const char* utf8);
     void con_sink_backspace(ConsoleSink*, int user_id);
     void con_sink_commit(ConsoleSink*, int user_id);
+
     /* адресуемые сообщения к виджетам */
     void con_sink_widget_message(ConsoleSink*, int user_id,
                                  ConItemId id,
                                  const char* tag,
                                  const void* data, size_t size);
+
     /* Эмиссия «дельт» (операций), проходящая через Sink/репликатор.
        В текущем loopback-режиме эквивалентна widget_message. */
     void con_sink_widget_delta(ConsoleSink*, int user_id,
                                ConItemId id,
                                const char* tag,
                                const void* data, size_t size);
+
+    /* публикация «выходных» строк процессора как операций (без повторного вызова процессора). */
+    void con_sink_append_line(ConsoleSink*, int user_id, const char* utf8_line);
+
+    /* вставка в заданные «якоря» (left/right). tail-варианты вызывают *_between с right=0. */
+    void con_sink_insert_text_between(ConsoleSink*, int user_id, ConItemId left, ConItemId right, const char* utf8_line);
+    void con_sink_insert_widget_color_between(ConsoleSink*, int user_id, ConItemId left, ConItemId right, uint8_t initial_r0_255);
+
     /* Инъекция готовой командной строки: добавить в историю как TEXT и отработать процессором. */
     void con_sink_commit_text_command(ConsoleSink*, int user_id, const char* utf8_line);
-
 
     /* ===== CRDT вставки через sink =====
        Вставить текст «в конец» (left = last, right = 0). */

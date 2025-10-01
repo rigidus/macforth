@@ -47,11 +47,10 @@ typedef struct {
     int   drag_start_my;
     int   drag_src_index;   /* индекс строки истории под курсором при press */
 
-    /* Промпты внутри консоли */
-    ConsolePrompt* p_user1; /* user_id=0, верх */
-    ConsolePrompt* p_user2; /* user_id=1, низ */
-    int top_h;
-    int bot_h;
+    ConsolePrompt* prompt;  /* единственный промпт внизу */
+    int            prompt_user_id;
+    int            top_h;   /* всегда 0 */
+    int            bot_h;   /* высота области промпта */
 } ConsoleViewState;
 
 /* ---------- utils ---------- */
@@ -103,13 +102,13 @@ static void console_on_frame_changed(Window* w, int old_w, int old_h){
     (void)old_w; (void)old_h;
     ConsoleViewState *st = (ConsoleViewState*)w->user;
     console_measure(st, surface_w(w->cache), surface_h(w->cache));
-    /* высоты промптов: по метрике шрифта + отступы */
+    /* нижний промпт: по метрике шрифта + отступы */
     int wM=0,hM=0; text_measure_utf8("M",&wM,&hM);
     int pad = 6;
-    st->top_h = hM + pad*2;
-    st->bot_h = hM + pad*2;
-    /* сколько строк в истории помещается между промптами */
-    int middle_h = surface_h(w->cache) - st->top_h - st->bot_h;
+    st->top_h = 0;
+    st->bot_h = (st->prompt ? (hM + pad*2) : 0);
+    /* сколько строк в истории помещается до промпта */
+    int middle_h = surface_h(w->cache) - st->bot_h;
     if (middle_h < st->cell_h) middle_h = st->cell_h;
     st->rows = middle_h / st->cell_h;
     w->invalid_all = true;
@@ -171,13 +170,6 @@ static void console_draw(Window *w, const Rect *area){
         surface_fill(w->cache, st->col_bg);
     }
 
-    /* --- верхний промпт (user 0) --- */
-    if (st->p_user1){
-        con_prompt_set_colors(st->p_user1, 0xFF0A0A0A, 0xFFFFFFFF);
-        con_prompt_draw(st->p_user1, w->cache, 4, 4, surface_w(w->cache)-8, st->top_h-8);
-        draw_border_rect(w->cache, 2, 2, surface_w(w->cache)-4, st->top_h-4, USER_COLORS[0]);
-    }
-
     HistoryLayout L = layout_compute(st);
     int vis_row = 0;
 
@@ -196,12 +188,12 @@ static void console_draw(Window *w, const Rect *area){
         }
     }
 
-    /* --- нижний промпт (user 1) --- */
-    if (st->p_user2){
+    /* --- нижний промпт (для prompt_user_id) --- */
+    if (st->prompt){
         int y0 = surface_h(w->cache) - st->bot_h;
-        con_prompt_set_colors(st->p_user2, 0xFF0A0A0A, 0xFFFFFFFF);
-        con_prompt_draw(st->p_user2, w->cache, 4, y0+4, surface_w(w->cache)-8, st->bot_h-8);
-        draw_border_rect(w->cache, 2, y0+2, surface_w(w->cache)-4, st->bot_h-4, USER_COLORS[1]);
+        con_prompt_set_colors(st->prompt, 0xFF0A0A0A, 0xFFFFFFFF);
+        con_prompt_draw(st->prompt, w->cache, 4, y0+4, surface_w(w->cache)-8, st->bot_h-8);
+        draw_border_rect(w->cache, 2, y0+2, surface_w(w->cache)-4, st->bot_h-4, USER_COLORS[st->prompt_user_id & 1]);
     }
 
     w->invalid_all = false;
@@ -250,8 +242,7 @@ static void console_destroy(Window *w){
 static void console_tick(Window *w, uint32_t now){
     ConsoleViewState *st = (ConsoleViewState*)w->user;
     /* тики промптов (мигание курсора внутри них) */
-    if (st->p_user1) con_prompt_tick(st->p_user1, now);
-    if (st->p_user2) con_prompt_tick(st->p_user2, now);
+    if (st->prompt) con_prompt_tick(st->prompt, now);
     /* просто перерисуем всё окно раз в кадр (промпты компактные) */
     w->invalid_all = true;
     w->next_anim_ms = next_frame(now);
@@ -273,14 +264,11 @@ static void console_on_event(Window *w, void* wm, const InputEvent *e, int lx, i
     (void)wm;
 
     int H = surface_h(w->cache);
-    int in_top_prompt = (ly >= 0 && ly < st->top_h);
     int in_bot_prompt = (ly >= H - st->bot_h && ly < H);
 
-    /* Клавиатура/текст → привязка к промпту по user_id (0 → верх, 1 → низ) */
+    /* Клавиатура/текст - привязка к промпту по user_id (0 → верх, 1 → низ) */
     if (e->type==1 || e->type==2){
-        ConsolePrompt* tgt = NULL;
-        if (e->user_id==0) tgt = st->p_user1;
-        else if (e->user_id==1) tgt = st->p_user2;
+        ConsolePrompt* tgt = (e->user_id == st->prompt_user_id) ? st->prompt : NULL;
         if (tgt){
             if (con_prompt_on_event(tgt, e)) { w->invalid_all = true; }
             return;
@@ -290,7 +278,7 @@ static void console_on_event(Window *w, void* wm, const InputEvent *e, int lx, i
     /* Сначала — мышь к виджетам в истории (если попали) */
     if (e->type==3 || e->type==4 || e->type==5){
         int cell_x=0, cell_y=0;
-        int idx = (!in_top_prompt && !in_bot_prompt) ? layout_hit_item(st, lx, ly, &cell_x, &cell_y) : -1;
+        int idx = (!in_bot_prompt) ? layout_hit_item(st, lx, ly, &cell_x, &cell_y) : -1;
         if (idx >= 0){
             ConsoleWidget* cw = con_store_get_widget(st->store, idx);
             if (cw && cw->on_event){
@@ -340,7 +328,7 @@ static void console_on_event(Window *w, void* wm, const InputEvent *e, int lx, i
         if (e->mouse.button==1 && e->mouse.state==1){
             /* press — проверим, попали ли по текстовой строке истории */
             int cell_x=0, cell_y=0;
-            int idx = (!in_top_prompt && !in_bot_prompt) ? layout_hit_item(st, lx, ly, &cell_x, &cell_y) : -1;
+            int idx = (!in_bot_prompt) ? layout_hit_item(st, lx, ly, &cell_x, &cell_y) : -1;
             if (idx >= 0){
                 /* не стартуем drag для строк-виджетов */
                 ConsoleWidget* cw = con_store_get_widget(st->store, idx);
@@ -397,13 +385,12 @@ static void console_on_event(Window *w, void* wm, const InputEvent *e, int lx, i
 static void con_drag_enter(Window* w, const WMDrag* d){ (void)w;(void)d; }
 static void con_drag_leave(Window* w, const WMDrag* d){ (void)w; (void)d; }
 static void con_drag_over(Window* w, WMDrag* d, int lx, int ly){
-    (void)w; (void)lx; (void)ly;
+    (void)lx;
     if (!d || !d->mime) { d->effect = WM_DRAG_NONE; return; }
     ConsoleViewState* st = (ConsoleViewState*)w->user;
     int H = surface_h(w->cache);
-    int in_top_prompt = (ly >= 0 && ly < st->top_h);
     int in_bot_prompt = (ly >= H - st->bot_h && ly < H);
-    if (in_top_prompt || in_bot_prompt){
+    if (in_bot_prompt){
         if (strcmp(d->mime, "application/x-square")==0 ||
             strcmp(d->mime, MIME_CMD_TEXT)==0){
             d->effect = WM_DRAG_COPY;
@@ -422,15 +409,13 @@ static void con_drag_over(Window* w, WMDrag* d, int lx, int ly){
 }
 
 static void con_drop(Window* w, WMDrag* d, int lx, int ly){
-    (void)lx; (void)ly;
+    (void)w;
     if (!d || !d->mime) return;
     ConsoleViewState *st = (ConsoleViewState*)w->user;
     int H = surface_h(w->cache);
-    int in_top_prompt = (ly >= 0 && ly < st->top_h);
     int in_bot_prompt = (ly >= H - st->bot_h && ly < H);
-
-    if (in_top_prompt || in_bot_prompt){
-        ConsolePrompt* tgt = in_top_prompt ? st->p_user1 : st->p_user2;
+    if (in_bot_prompt){
+        ConsolePrompt* tgt = st->prompt;
         if (!tgt) { d->effect = WM_DRAG_REJECT; return; }
         if (strcmp(d->mime, "application/x-square")==0){
             /* превратим квадрат в s-expr и положим в буфер промпта (делает con_prompt_on_drop) */
@@ -444,14 +429,32 @@ static void con_drop(Window* w, WMDrag* d, int lx, int ly){
     }
 
     if (strcmp(d->mime, "application/x-square")==0){
-        /* Вставляем виджет через CRDT-sink (реплицируемо) */
+        /* Вставляем виджет через CRDT-sink (реплицируемо) с «якорями» по месту дропа */
         uint8_t initial = 128;
         if (d->size >= (int)sizeof(SquarePayload) && d->data){
             const SquarePayload* sp = (const SquarePayload*)d->data;
             initial = (uint8_t)((sp->colA >> 16) & 0xFF);
         }
         if (st->sink){
-            con_sink_insert_widget_color(st->sink, 0/*user_id*/, initial);
+            /* вычислим L/R из hit-test */
+            int cell_x=0, cell_y=0;
+            int idx = layout_hit_item(st, lx, ly, &cell_x, &cell_y);
+            ConItemId left = CON_ITEMID_INVALID, right = CON_ITEMID_INVALID;
+            HistoryLayout L = layout_compute(st);
+            if (idx >= 0){
+                /* вставляем ПОСЛЕ строки idx */
+                left = con_store_get_id(st->store, idx);
+                int next = idx+1;
+                if (next < L.start_index + L.history_rows && next < con_store_count(st->store)){
+                    right = con_store_get_id(st->store, next);
+                } else {
+                    right = CON_ITEMID_INVALID;
+                }
+            } else {
+                left = con_store_last_id(st->store);
+                right = CON_ITEMID_INVALID;
+            }
+            con_sink_insert_widget_color_between(st->sink, 0/*user_id*/, left, right, initial);
             d->effect = WM_DRAG_COPY;
         } else {
             d->effect = WM_DRAG_REJECT;
@@ -487,7 +490,7 @@ static const WindowVTable V = {
 };
 
 
-void win_console_init(Window *w, Rect frame, int z, ConsoleStore* store, ConsoleProcessor* proc, ConsoleSink* sink){
+void win_console_init(Window *w, Rect frame, int z, ConsoleStore* store, ConsoleProcessor* proc, ConsoleSink* sink, int prompt_user_id){
     window_init(w, "console", frame, z, &V);
 
     ConsoleViewState *st = (ConsoleViewState*)calloc(1, sizeof(ConsoleViewState));
@@ -496,10 +499,10 @@ void win_console_init(Window *w, Rect frame, int z, ConsoleStore* store, Console
 
     console_measure(st, surface_w(w->cache), surface_h(w->cache));
 
-    /* высоты промптов по шрифту */
+    /* высота нижнего промпта по шрифту */
     int wM=0,hM=0; text_measure_utf8("M",&wM,&hM);
-    int pad=6; st->top_h = hM + pad*2; st->bot_h = hM + pad*2;
-    int middle_h = surface_h(w->cache) - st->top_h - st->bot_h;
+    int pad=6; st->top_h = 0; st->bot_h = hM + pad*2;
+    int middle_h = surface_h(w->cache) - st->bot_h;
     if (middle_h < st->cell_h) middle_h = st->cell_h;
     st->rows = middle_h / st->cell_h;
 
@@ -510,9 +513,9 @@ void win_console_init(Window *w, Rect frame, int z, ConsoleStore* store, Console
     /* подписка на изменения Store — чтобы вторая вьюха увидела обновления */
     con_store_subscribe(store, on_store_changed, w);
 
-    /* промпты: верх для user 0, низ для user 1 */
-    st->p_user1 = con_prompt_create(0, sink);
-    st->p_user2 = con_prompt_create(1, sink);
+    /* промпт для конкретного пользователя внизу */
+    st->prompt_user_id = prompt_user_id;
+    st->prompt = con_prompt_create(prompt_user_id, sink);
     /* цвета промптов можно оставить дефолтными — бордеры рисуем сами */
 
     st->dirty_rows_mask = 0;
