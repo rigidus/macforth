@@ -66,3 +66,7 @@ bool wm_any_drag_active(WM* wm);
 /* Безопасно изменить позицию/размер окна: пересоздаёт cache при изменении размера,
    грязнит старый и новый прямоугольники, вызывает on_frame_changed */
 void wm_window_set_frame(WM* wm, Window* w, Rect newf);
+
+/* Инвалидация окна с немедленным добавлением damage (area_screen — в экранных координатах).
+   Если прямоугольник пустой, грязнится весь frame окна. */
+void wm_window_invalidate(WM* wm, Window* w, Rect area_screen);

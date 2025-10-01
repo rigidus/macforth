@@ -204,3 +204,14 @@ bool wm_any_drag_active(WM* wm){
     }
     return false;
 }
+
+
+void wm_window_invalidate(WM* wm, Window* w, Rect area){
+    if (!wm || !w) return;
+    w->invalid_all = true;
+    Rect r = area;
+    if (r.w<=0 || r.h<=0) {
+        r = w->frame;
+    }
+    wm_damage_add(wm, r);
+}

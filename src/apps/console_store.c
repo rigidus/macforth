@@ -73,6 +73,7 @@ typedef struct ConEntry {
     union {
         struct { char* s; int len; } text;
         ConsoleWidget* widget;
+        struct { int dropped_count; } snap; /* CON_ENTRY_SNAPSHOT */
     } as;
 } ConEntry;
 
@@ -89,6 +90,11 @@ struct ConsoleStore {
     /* отсортированный порядок отображения: индексы в entries[] */
     int   order[CON_BUF_LINES];
     int   order_valid;
+
+    /* --- очередь «точечных» изменений и флаг all для инкрементального редрава --- */
+    ConItemId changes[CON_STORE_CHANGES_MAX];
+    int       changes_n;
+    int       changes_all; /* 1 — структура изменилась (вставки/компакция/пересортировка) */
 
     /* --- состояние промптов и индикаторы ввода (по user_id) --- */
     struct {
@@ -166,7 +172,28 @@ static void rebuild_order(ConsoleStore* st){
     st->order_valid = 1;
 }
 
-/* ===== Компактация хвоста (M11) =====
+/* ==== Трекинг изменений для инкрементальной перерисовки ==== */
+static void changes_reset(ConsoleStore* st){ st->changes_n = 0; st->changes_all = 0; }
+static void changes_mark_all(ConsoleStore* st){ st->changes_all = 1; }
+static void changes_push(ConsoleStore* st, ConItemId id){
+    if (st->changes_all) return; /* уже решено перерисовать всё */
+    if (id==CON_ITEMID_INVALID) { st->changes_all = 1; return; }
+    if (st->changes_n < CON_STORE_CHANGES_MAX){
+        st->changes[st->changes_n++] = id;
+    } else {
+        /* переполнение очереди — переключаемся на полный redraw */
+        st->changes_all = 1;
+    }
+}
+int con_store_drain_changes(ConsoleStore* st, ConItemId* out_ids, int cap, int* out_all_flag){
+    if (!st) return 0;
+    int all = st->changes_all;
+    int n = (st->changes_n < cap)? st->changes_n : cap;
+    if (out_ids && n>0) memcpy(out_ids, st->changes, n*sizeof(ConItemId));
+    changes_reset(st); if (out_all_flag) *out_all_flag = all; return n;
+}
+
+/* ===== Компактация хвоста =====
    Удаляем самые старые TEXT-строки (но не WIDGET), пока не останется минимум keep_last.
    Если удалили достаточно (>= min_drop), добавляем в конец строку-заглушку. */
 static void maybe_compact_tail(ConsoleStore* st){
@@ -187,22 +214,17 @@ static void maybe_compact_tail(ConsoleStore* st){
         drop++;
     }
     if (drop >= CON_SNAPSHOT_MIN_DROP){
-        char line[96];
-        /* без локали/плюралов — просто число */
-        snprintf(line, sizeof(line), "(... %d older lines compacted ...)", drop);
-        /* Важно: внутренний append без notify/rebuild — мы сами вызовем notify() у вызывающих */
+        /* Добавляем агрегатный SNAPSHOT-элемент вместо текстовой строки-заглушки */
         int idx = (st->head + st->count) % CON_BUF_LINES;
         free_entry(&st->entries[idx]);
-        st->entries[idx].type = CON_ENTRY_TEXT;
+        st->entries[idx].type = CON_ENTRY_SNAPSHOT;
         st->entries[idx].id   = st->next_id++;
         st->entries[idx].pos  = con_store_gen_between(st, con_store_last_id(st), CON_ITEMID_INVALID, 0);
-        size_t n = strlen(line);
-        st->entries[idx].as.text.s = (char*)malloc(n+1);
-        if (st->entries[idx].as.text.s){
-            memcpy(st->entries[idx].as.text.s, line, n+1);
-            st->entries[idx].as.text.len = (int)n;
-            if (st->count < CON_BUF_LINES) st->count++; else st->head = (st->head + 1) % CON_BUF_LINES;
-        }
+        st->entries[idx].user_id = -1;
+        st->entries[idx].as.snap.dropped_count = drop;
+        if (st->count < CON_BUF_LINES) st->count++; else st->head = (st->head + 1) % CON_BUF_LINES;
+        /* после компактации структура изменилась → полный redraw */
+        changes_mark_all(st);
     }
 }
 
@@ -239,6 +261,8 @@ ConsoleStore* con_store_create(void){
     st->head = 0;
     st->count = 0;
     st->order_valid = 0;
+    /* очередь изменений пуста */
+    changes_reset(st);
     /* промпты по умолчанию пустые */
     for (int i=0;i<CON_MAX_USERS;i++){ st->prompts[i].len=0; st->prompts[i].buf[0]=0; st->prompts[i].edits=0; st->prompts[i].nonempty=0; }
     /* подписки/колбеки по умолчанию уже обнулены calloc'ом */
@@ -277,6 +301,8 @@ static void append_line_internal(ConsoleStore* st, const char* s){
         if (st->count < CON_BUF_LINES) st->count++;
         else st->head = (st->head + 1) % CON_BUF_LINES;
     }
+    /* изменение структуры (добавление) - проще пометить как all */
+    changes_mark_all(st);
     /* компактацию не вызываем здесь, чтобы избежать рекурсии */
 }
 
@@ -301,6 +327,7 @@ void con_store_append_line(ConsoleStore* st, const char* s){
     append_line_internal(st, s);
     maybe_compact_tail(st);
     notify(st);
+    changes_mark_all(st);
 }
 
 ConItemId con_store_append_widget(ConsoleStore* st, ConsoleWidget* w){
@@ -308,6 +335,7 @@ ConItemId con_store_append_widget(ConsoleStore* st, ConsoleWidget* w){
     ConItemId id = append_widget_internal(st, w);
     notify(st);
     maybe_compact_tail(st);
+    changes_mark_all(st);
     return id;
 }
 
@@ -398,6 +426,8 @@ int con_store_widget_message(ConsoleStore* st, ConItemId id,
     if (!w || !w->on_message) return 0;
     int changed = w->on_message(w, tag, data, size);
     if (changed){
+        /* точечное изменение конкретного элемента */
+        changes_push(st, id);
         notify(st);
     }
     return changed;
@@ -428,6 +458,7 @@ ConItemId con_store_insert_text_between(ConsoleStore* st, ConItemId left, ConIte
         st->entries[idx].as.text.len = (int)n;
         if (st->count < CON_BUF_LINES) st->count++;
         else st->head = (st->head + 1) % CON_BUF_LINES;
+        changes_mark_all(st); /* вставка меняет порядки — безопасно перерисовать всё */
         notify(st);
         return st->entries[idx].id;
     }
@@ -450,6 +481,7 @@ ConItemId con_store_insert_text_at(ConsoleStore* st, ConItemId forced_id, const 
         st->entries[idx].as.text.s[n]=0;
         st->entries[idx].as.text.len = (int)n;
         if (st->count < CON_BUF_LINES) st->count++; else st->head = (st->head + 1) % CON_BUF_LINES;
+        changes_mark_all(st); /* структура менялась */
         notify(st);
         maybe_compact_tail(st);
         return st->entries[idx].id;
@@ -468,6 +500,7 @@ ConItemId con_store_insert_widget_at(ConsoleStore* st, ConItemId forced_id, cons
     st->entries[idx].user_id = (user_id>=0)? user_id : -1;
     st->entries[idx].as.widget = w;
     if (st->count < CON_BUF_LINES) st->count++; else st->head = (st->head + 1) % CON_BUF_LINES;
+    changes_mark_all(st); /* структура менялась */
     notify(st);
     maybe_compact_tail(st);
     return st->entries[idx].id;
@@ -481,7 +514,18 @@ ConItemId con_store_last_id(const ConsoleStore* st){
     return st->entries[phys].id;
 }
 
-/* ===== Промпты (M2) ===== */
+/* ===== Снапшоты ===== */
+int con_store_get_snapshot_dropped(const ConsoleStore* st, int index){
+    if (!st || index<0 || index>=st->count) return -1;
+    if (!st->order_valid) rebuild_order((ConsoleStore*)st);
+    int phys = phys_index(st, index);
+    if (phys<0) return -1;
+    const ConEntry* e = &st->entries[phys];
+    if (e->type != CON_ENTRY_SNAPSHOT) return -1;
+    return e->as.snap.dropped_count;
+}
+
+/* ===== Промпты ===== */
 static inline int valid_uid(int uid){ return uid>=0 && uid<CON_MAX_USERS; }
 
 void con_store_prompt_insert(ConsoleStore* st, int user_id, const char* utf8, int bump){

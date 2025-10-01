@@ -22,6 +22,10 @@
 /* Цвета пользователей для бордеров и окраски команд */
 static const uint32_t USER_COLORS[2] = { 0xFF3B82F6, /* user0: синий */ 0xFF22C55E /* user1: зелёный */ };
 
+/* Максимум строк, для которых имеет смысл держать битовую маску грязи.
+   Если строк больше — при точечных изменениях лучше перерисовать всё. */
+#define CON_MAX_VIEW_ROWS 64
+
 typedef struct {
     /* сетка и метрики */
     int cell_w, cell_h;
@@ -54,10 +58,22 @@ typedef struct {
     int            prompt_user_id;
     int            top_h;   /* всегда 0 */
     int            bot_h;   /* высота области промпта */
+
+    /* ---- Кэш лейаута row→id ---- */
+    int       layout_rows;        /* сколько строк истории помещается (без промпта) */
+    int       layout_start_index; /* индекс первого элемента Store в окне */
+    int       layout_valid;       /* 1 — кэш соответствует текущему Store/размеру */
+    ConItemId row_ids[CON_MAX_VIEW_ROWS]; /* id элемента для каждой видимой строки (0, если нет) */
+
+    /* Для пометки all-redraw (когда структура изменилась) */
+    int       request_full_redraw;
+
     /* ---- Lazy mode (per-view) ---- */
     LazyMode   lazy_mode;
     ConItemId  active_for_user[WM_MAX_USERS];  /* какой widget активен у каждого user на этой вьюхе */
     int        chord_stage[WM_MAX_USERS];      /* 0 – нет, 1 – C-x, 2 – C-x w (ждём g) */
+
+    WM*       wm;              /* back-pointer для броска damage при инвалидации */
 } ConsoleViewState;
 
 /* ---------- utils ---------- */
@@ -94,6 +110,48 @@ static HistoryLayout layout_compute(ConsoleViewState* st){
     return L;
 }
 
+/* Пересобрать кэш лейаута row→id (только если влезает в CON_MAX_VIEW_ROWS) */
+static void layout_rebuild_cache(ConsoleViewState* st){
+    HistoryLayout L = layout_compute(st);
+    st->layout_rows = L.history_rows;
+    st->layout_start_index = L.start_index;
+    st->layout_valid = 1;
+    if (L.history_rows > CON_MAX_VIEW_ROWS){
+        /* слишком много строк — кэш не используем, fallback на полный redraw */
+        st->layout_valid = 0;
+        return;
+    }
+    for (int row=0; row<L.history_rows; ++row){
+        int idx = L.start_index + row;
+        ConItemId id = con_store_get_id(st->store, idx);
+        st->row_ids[row] = id;
+    }
+}
+
+/* Найти видимую строку по id, используя кэш; вернуть -1, если нет */
+static int cached_find_row_by_id(ConsoleViewState* st, ConItemId id){
+    if (!st->layout_valid) return -1;
+    for (int r=0; r<st->layout_rows; ++r){
+        if (st->row_ids[r] == id) return r;
+    }
+    return -1;
+}
+
+static void mark_row_dirty(Window* w, ConsoleViewState* st, int row){
+    if (row < 0) return;
+    if (row >= st->rows) return;
+    if (st->rows > CON_MAX_VIEW_ROWS) {
+        /* Полный redraw окна: кидаем damage на весь frame */
+        if (st->wm) wm_window_invalidate(st->wm, w, w->frame); else w->invalid_all = true;
+        return;
+    }
+    st->dirty_rows_mask |= (1ull << row);
+    int y = st->top_h + row * st->cell_h;
+    Rect r = rect_make(w->frame.x, w->frame.y + y, st->cols*st->cell_w, st->cell_h);
+    if (st->wm) wm_window_invalidate(st->wm, w, r); else window_invalidate(w, r);
+}
+
+
 /* Возвращает индекс элемента Store под локальной координатой (lx,ly) в истории,
    либо -1 если вне видимой истории или попали в промпты. */
 static int layout_hit_item(ConsoleViewState* st, int lx, int ly, int* out_cell_x, int* out_cell_y){
@@ -120,6 +178,10 @@ static void console_on_frame_changed(Window* w, int old_w, int old_h){
     int middle_h = surface_h(w->cache) - st->bot_h;
     if (middle_h < st->cell_h) middle_h = st->cell_h;
     st->rows = middle_h / st->cell_h;
+    /* сбрасываем кэш и маску */
+    st->layout_valid = 0;
+    st->dirty_rows_mask = 0;
+    st->request_full_redraw = 1;
     w->invalid_all = true;
     st->dirty_rows_mask = 0; /* смена размера — проще перерисовать всё */
 }
@@ -135,6 +197,20 @@ static void draw_line_text(Surface *dst, int x, int y, const char *s, uint32_t a
     surface_free(glyph);
 }
 
+/* Текст для снапшота */
+static void draw_snapshot_line(Surface* dst, int x, int y, int baseline_off, int dropped, uint32_t fg){
+    char line[96];
+    SDL_snprintf(line, sizeof(line), "(... %d older lines compacted ...)", dropped);
+    draw_line_text(dst, x, y + baseline_off, line, fg);
+}
+
+static void ensure_layout(ConsoleViewState* st){
+    if (!st->layout_valid || st->request_full_redraw){
+        layout_rebuild_cache(st);
+        st->request_full_redraw = 0;
+    }
+}
+
 /* helper для частичного редрава: отрисовать одну строку истории */
 static void s_draw_history_row(Window* w, ConsoleViewState* st, const HistoryLayout* L,
                                int row, int baseline_off){
@@ -145,7 +221,8 @@ static void s_draw_history_row(Window* w, ConsoleViewState* st, const HistoryLay
     int y = st->top_h + row * st->cell_h;
     /* затираем фон полосы строки */
     surface_fill_rect(w->cache, 0, y, st->cols*st->cell_w, st->cell_h, st->col_bg);
-    ConsoleWidget* cw = con_store_get_widget(st->store, idx);
+    ConEntryType et = con_store_get_type(st->store, idx);
+    ConsoleWidget* cw = (et==CON_ENTRY_WIDGET) ? con_store_get_widget(st->store, idx) : NULL;
     if (cw && cw->draw){
         /* ленивый плейсхолдер? */
         ConItemId id = con_store_get_id(st->store, idx);
@@ -157,8 +234,8 @@ static void s_draw_history_row(Window* w, ConsoleViewState* st, const HistoryLay
             uint32_t plate = 0xFF141414; /* тёмно-серая плашка на чёрном фоне */
             surface_fill_rect(w->cache, 0, y, st->cols*st->cell_w, st->cell_h, plate);
             char buf[128]; buf[0]=0;
-            const char* t = cw->as_text ? cw->as_text(cw, buf, (int)sizeof(buf)) : "[widget]";
-            draw_line_text(w->cache, 6, y + baseline_off, t ? t : "[widget]", 0xFFCCCCCC);
+            const char* txt = cw->as_text ? cw->as_text(cw, buf, (int)sizeof(buf)) : "[widget]";
+            draw_line_text(w->cache, 6, y + baseline_off, txt ? txt : "[widget]", 0xFFCCCCCC);
             /* рамка: неактивный — приглушённая */
             draw_border_rect(w->cache, 0, y, st->cols*st->cell_w, st->cell_h, 0xFF353535);
         } else {
@@ -168,7 +245,14 @@ static void s_draw_history_row(Window* w, ConsoleViewState* st, const HistoryLay
             draw_border_rect(w->cache, 0, y, st->cols*st->cell_w, st->cell_h, bcol);
         }
     } else {
-        const char *s = con_store_get_line(st->store, idx);
+        if (et == CON_ENTRY_SNAPSHOT){
+            int dropped = con_store_get_snapshot_dropped(st->store, idx);
+            /* всегда системный цвет для снапшотов */
+            draw_snapshot_line(w->cache, 0, y, baseline_off, (dropped>=0? dropped:0), 0xFFAAAAAA);
+            /* рамку не рисуем */
+            return;
+        }
+        const char *s = (et==CON_ENTRY_TEXT) ? con_store_get_line(st->store, idx) : "";
         if (!s) s = "";
         /* выбираем цвет текста по user_id источника */
         int uid = con_store_get_user(st->store, idx);
@@ -201,6 +285,7 @@ static void console_draw(Window *w, const Rect *area){
         surface_fill(w->cache, st->col_bg);
     }
 
+    ensure_layout(st);
     HistoryLayout L = layout_compute(st);
     int vis_row = 0;
 
@@ -217,6 +302,8 @@ static void console_draw(Window *w, const Rect *area){
             if (m & 1ull){ s_draw_history_row(w, st, &L, row, baseline_off); }
             m >>= 1ull;
         }
+        /* маску отрисовали — сбросим */
+        st->dirty_rows_mask = 0;
     }
 
     /* --- нижний промпт (для prompt_user_id) --- */
@@ -302,7 +389,41 @@ static void console_tick(Window *w, uint32_t now){
 static void on_store_changed(void* user){
     Window* w = (Window*)user;
     if (!w) return;
-    w->invalid_all = true;
+    /* Попробуем «слить» точечные изменения из Store и отметить грязные строки,
+       иначе — полный redraw. */
+    ConsoleViewState* st = (ConsoleViewState*)w->user;
+    if (!st) { w->invalid_all = true; return; }
+
+    ConItemId ids[CON_STORE_CHANGES_MAX];
+    int all = 0;
+    int n = con_store_drain_changes(st->store, ids, (int)(sizeof(ids)/sizeof(ids[0])), &all);
+    if (all || st->rows > CON_MAX_VIEW_ROWS){
+        st->layout_valid = 0;
+        st->dirty_rows_mask = 0;
+        st->request_full_redraw = 1;
+        /* Полный redraw: сразу добавим damage, чтобы композитор сделал кадр без ввода */
+        if (st->wm) wm_window_invalidate((WM*)st->wm, w, w->frame);
+        else w->invalid_all = true;
+        return;
+    }
+    /* Если Store прислал notify без точечных изменений (например, поменялись
+       только метаданные промптов: nonempty/edits) — перерисуем полосу промпта. */
+    if (n == 0){
+        int y0 = surface_h(w->cache) - st->bot_h;
+        Rect r = rect_make(w->frame.x, w->frame.y + y0, surface_w(w->cache), st->bot_h);
+        if (st->wm) wm_window_invalidate(st->wm, w, r);
+        else        w->invalid_all = true;
+        return;
+    }
+    /* есть точечные изменения — отметим соответствующие строки */
+    ensure_layout(st);
+    for (int i=0;i<n;i++){
+        int row = cached_find_row_by_id(st, ids[i]);
+        if (row >= 0) mark_row_dirty(w, st, row);
+        else { /* элемент вне видимой области — можно игнорировать; если сомневаемся — redraw */
+            /* no-op */
+        }
+    }
 }
 
 /* --- утилита: инвалидация строки по ID --- */
@@ -313,10 +434,9 @@ static void invalidate_item_by_id(Window* w, ConsoleViewState* st, ConItemId id)
     HistoryLayout L = layout_compute(st);
     if (idx < L.start_index || idx >= L.start_index + L.history_rows) return;
     int row = idx - L.start_index;
-    int y = st->top_h + row * st->cell_h;
-    Rect r = rect_make(w->frame.x, w->frame.y + y, st->cols*st->cell_w, st->cell_h);
-    window_invalidate(w, r);
-    w->invalid_all = true;
+    /* локально помечаем грязной ровно одну строку */
+    st->layout_valid = 0; /* порядок мог не измениться, но перестроить кэш дёшево */
+    mark_row_dirty(w, st, row);
 }
 
 /* --- обработка chord'а C-x w g (per-user) --- */
@@ -434,8 +554,7 @@ static void console_on_event(Window *w, void* wm, const InputEvent *e, int lx, i
                     }
                     /* перерисуем строку с виджетом */
                     Rect r = rect_make(w->frame.x, w->frame.y + cell_y, st->cols*st->cell_w, st->cell_h);
-                    window_invalidate(w, r);
-                    w->invalid_all = true;
+                    if (st->wm) wm_window_invalidate(st->wm, w, r); else { window_invalidate(w, r); w->invalid_all = true; }
                 }
             }
             return; /* событие «съедено» виджетом */
@@ -640,7 +759,7 @@ void win_console_set_lazy_mode(Window* w, LazyMode mode){
     st->lazy_mode = mode; w->invalid_all = true;
 }
 
-void win_console_init(Window *w, Rect frame, int z, ConsoleStore* store, ConsoleProcessor* proc, ConsoleSink* sink, int prompt_user_id){
+void win_console_init(Window *w, WM* wm, Rect frame, int z, ConsoleStore* store, ConsoleProcessor* proc, ConsoleSink* sink, int prompt_user_id){
     window_init(w, "console", frame, z, &V);
 
     ConsoleViewState *st = (ConsoleViewState*)calloc(1, sizeof(ConsoleViewState));
@@ -657,6 +776,7 @@ void win_console_init(Window *w, Rect frame, int z, ConsoleStore* store, Console
     st->rows = middle_h / st->cell_h;
 
     /* модель и sink */
+    st->wm    = wm;
     st->store = store;
     st->proc  = proc;
     st->sink  = sink;
@@ -677,6 +797,11 @@ void win_console_init(Window *w, Rect frame, int z, ConsoleStore* store, Console
     st->drag_src_index = -1;
 
     st->dirty_rows_mask = 0;
+
+    st->layout_valid = 0;
+    st->layout_rows = 0;
+    st->layout_start_index = 0;
+    st->request_full_redraw = 1;
 
     w->user = st;
     w->animating = false;

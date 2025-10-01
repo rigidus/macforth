@@ -97,13 +97,13 @@ int main(void) {
     static Window wcon0, wcon1;
     int con_h = sh/3;
     /* первая — снизу слева (user 0) */
-    win_console_init(&wcon0,
+    win_console_init(&wcon0, wm,
                      rect_make(20, sh - con_h - 20, (sw-60)/2, con_h),
                      100,
                      con_store, con_proc, con_sink, 0 /* user_0 */);
     wm_add(wm, &wcon0);
     /* вторая — снизу справа (user 1) */
-    win_console_init(&wcon1,
+    win_console_init(&wcon1, wm,
                      rect_make(40 + (sw-60)/2, sh - con_h - 20, (sw-60)/2, con_h),
                      101,
                      con_store, con_proc, con_sink, 1 /* user_1 */);
