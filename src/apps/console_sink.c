@@ -1,4 +1,3 @@
-#include "console/sink.h"
 #include <stdlib.h>
 #include <string.h>
 #include "console/sink.h"
@@ -219,7 +218,7 @@ void con_sink_destroy(ConsoleSink* s){
     free(s);
 }
 
-/* ===== M2: операции промпта — локальная правка + рассылка индикатора ===== */
+/* ===== операции промпта — локальная правка + рассылка индикатора ===== */
 static void publish_prompt_meta(ConsoleSink* s, int user_id){
     if (!s || !s->repl) return;
     int nonempty = con_store_prompt_len(s->store, user_id) > 0 ? 1 : 0;
@@ -407,7 +406,6 @@ void con_sink_widget_delta(ConsoleSink* s, int user_id,
 }
 
 void con_sink_commit_text_command(ConsoleSink* s, int user_id, const char* utf8_line){
-    (void)user_id;
     if (!s || !utf8_line) return;
     /* CRDT-вставка текста в хвост */
     con_sink_insert_text_tail(s, user_id, utf8_line);
