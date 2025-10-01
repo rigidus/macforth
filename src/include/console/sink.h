@@ -37,9 +37,8 @@ extern "C" {
     /* публикация «выходных» строк процессора как операций (без повторного вызова процессора). */
     void con_sink_append_line(ConsoleSink*, int user_id, const char* utf8_line);
 
-    /* вставка в заданные «якоря» (left/right). tail-варианты вызывают *_between с right=0. */
+    /* вставка текста в заданные «якоря» (оставляем как было) */
     void con_sink_insert_text_between(ConsoleSink*, int user_id, ConItemId left, ConItemId right, const char* utf8_line);
-    void con_sink_insert_widget_color_between(ConsoleSink*, int user_id, ConItemId left, ConItemId right, uint8_t initial_r0_255);
 
     /* Инъекция готовой командной строки: добавить в историю как TEXT и отработать процессором. */
     void con_sink_commit_text_command(ConsoleSink*, int user_id, const char* utf8_line);
@@ -48,8 +47,7 @@ extern "C" {
        Вставить текст «в конец» (left = last, right = 0). */
     void con_sink_insert_text_tail(ConsoleSink*, int user_id, const char* utf8_line);
 
-    /* Вставка виджета ColorSlider в «конец».
-       Можно расширить до generic (widget_kind/init), но для демо достаточно. */
+    /* Всегда вставлять виджет ColorSlider в «конец» */
     void con_sink_insert_widget_color(ConsoleSink*, int user_id, uint8_t initial_r0_255);
 
     /* ---- HLC/actor helpers (для штамповки дельт виджетов) ---- */

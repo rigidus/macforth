@@ -310,36 +310,6 @@ void con_sink_insert_text_between(ConsoleSink* s, int user_id, ConItemId left, C
     }
 }
 
-void con_sink_insert_widget_color_between(ConsoleSink* s, int user_id, ConItemId left, ConItemId right, uint8_t initial_r0_255){
-    if (!s) return;
-    ConPosId pos = con_store_gen_between(s->store, left, right, s->actor_id);
-    ConItemId new_id = ((uint64_t)s->actor_id<<32) | (uint64_t)(s->next_item_seq++);
-    if (s->is_listener){
-        ConsoleWidget* w = widget_color_create(initial_r0_255);
-        if (w) con_store_insert_widget_at(s->store, new_id, &pos, w, user_id);
-    }
-    if (s->repl){
-        ConOp op = (ConOp){0};
-        op.op_id   = ((uint64_t)s->actor_id<<32) | (s->next_op_id++);
-        op.hlc     = con_sink_tick_hlc(s, SDL_GetTicks());
-        op.actor_id= s->actor_id;
-        op.console_id = s->console_id;
-        op.user_id = user_id;
-        op.type    = CON_OP_INSERT_WIDGET;
-        op.new_item_id = new_id;
-        op.parent_left = left;
-        op.parent_right= right;
-        op.pos = pos;
-        op.widget_kind = 1; /* ColorSlider */
-        uint8_t init = initial_r0_255;
-        op.init_blob = &init; op.init_size = 1;
-        op.init_hash = fnv1a64(&init, 1);
-        blob_put(op.init_hash, &init, 1);
-        pending_add(s, op.op_id);
-        replicator_publish(s->repl, &op);
-    }
-}
-
 /* ===== CRDT вставки (текст/виджеты) ===== */
 void con_sink_insert_text_tail(ConsoleSink* s, int user_id, const char* utf8_line){
     if (!s || !utf8_line) return;
@@ -349,9 +319,43 @@ void con_sink_insert_text_tail(ConsoleSink* s, int user_id, const char* utf8_lin
 }
 
 void con_sink_insert_widget_color(ConsoleSink* s, int user_id, uint8_t initial_r0_255){
-    ConItemId left = con_store_last_id(s->store);
+    if (!s) return;
+
+    /* всегда вставляем в хвост */
+    ConItemId left  = con_store_last_id(s->store);
     ConItemId right = CON_ITEMID_INVALID;
-    con_sink_insert_widget_color_between(s, user_id, left, right, initial_r0_255);
+    ConPosId  pos   = con_store_gen_between(s->store, left, right, s->actor_id);
+    ConItemId new_id = ((uint64_t)s->actor_id<<32) | (uint64_t)(s->next_item_seq++);
+
+    /* локальная вставка для слушателя */
+    if (s->is_listener){
+        ConsoleWidget* w = widget_color_create(initial_r0_255);
+        if (w) {
+            con_store_insert_widget_at(s->store, new_id, &pos, w, user_id);
+        }
+    }
+
+    /* репликация операции */
+    if (s->repl){
+        ConOp op = (ConOp){0};
+        op.op_id       = ((uint64_t)s->actor_id<<32) | (s->next_op_id++);
+        op.hlc         = con_sink_tick_hlc(s, SDL_GetTicks());
+        op.actor_id    = s->actor_id;
+        op.console_id  = s->console_id;
+        op.user_id     = user_id;
+        op.type        = CON_OP_INSERT_WIDGET;
+        op.new_item_id = new_id;
+        op.parent_left = left;
+        op.parent_right= right;
+        op.pos         = pos;
+        op.widget_kind = 1; /* ColorSlider */
+        uint8_t init   = initial_r0_255;
+        op.init_blob = &init; op.init_size = 1;
+        op.init_hash = fnv1a64(&init, 1);
+        blob_put(op.init_hash, &init, 1);
+        pending_add(s, op.op_id);
+        replicator_publish(s->repl, &op);
+    }
 }
 
 void con_sink_widget_message(ConsoleSink* s, int user_id,

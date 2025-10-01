@@ -91,8 +91,8 @@ void con_processor_on_command(ConsoleProcessor* p, const char* line){
         return;
     }
     if (starts_with(s, "color")){
-        /* вставляем виджет через Sink (реплицируемо, якоря/CRDT) */
-        if (p->sink) con_sink_insert_widget_color_between(p->sink, -1, con_store_last_id(p->store), 0, 128);
+        /* всегда добавляем виджет в конец ленты */
+        if (p->sink) con_sink_insert_widget_color(p->sink, -1, 128);
         return;
     }
     if (starts_with(s, "widgets")){

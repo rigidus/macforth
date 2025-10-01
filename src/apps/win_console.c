@@ -692,32 +692,15 @@ static void con_drop(Window* w, WMDrag* d, int lx, int ly){
     }
 
     if (strcmp(d->mime, "application/x-square")==0){
-        /* Вставляем виджет через CRDT-sink (реплицируемо) с «якорями» по месту дропа */
+        /* Всегда вставляем виджет в КОНЕЦ ленты, игнорируя позицию дропа */
+        (void)lx; (void)ly;
         uint8_t initial = 128;
         if (d->size >= (int)sizeof(SquarePayload) && d->data){
             const SquarePayload* sp = (const SquarePayload*)d->data;
             initial = (uint8_t)((sp->colA >> 16) & 0xFF);
         }
         if (st->sink){
-            /* вычислим L/R из hit-test */
-            int cell_x=0, cell_y=0;
-            int idx = layout_hit_item(st, lx, ly, &cell_x, &cell_y);
-            ConItemId left = CON_ITEMID_INVALID, right = CON_ITEMID_INVALID;
-            HistoryLayout L = layout_compute(st);
-            if (idx >= 0){
-                /* вставляем ПОСЛЕ строки idx */
-                left = con_store_get_id(st->store, idx);
-                int next = idx+1;
-                if (next < L.start_index + L.history_rows && next < con_store_count(st->store)){
-                    right = con_store_get_id(st->store, next);
-                } else {
-                    right = CON_ITEMID_INVALID;
-                }
-            } else {
-                left = con_store_last_id(st->store);
-                right = CON_ITEMID_INVALID;
-            }
-            con_sink_insert_widget_color_between(st->sink, 0/*user_id*/, left, right, initial);
+            con_sink_insert_widget_color(st->sink, d->user_id, initial);
             d->effect = WM_DRAG_COPY;
         } else {
             d->effect = WM_DRAG_REJECT;
