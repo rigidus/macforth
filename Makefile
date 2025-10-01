@@ -1,6 +1,7 @@
 # Структура исходников (см. каталог src/*):
 #   core/     — менеджер окон, damage-листы, ввод, тайминг (без SDL-типа окон)
 #   gfx/      — 2D-поверхность и текст (внутри SDL_Surface/TTF, наружу свой API)
+#   net/      — сетевой поллер/транспорты (неблокирующие, кроссплатформенные)
 #   apps/     — конкретные окна-приложения (paint/square/console)
 #   platform/ — обёртка над SDL (окно, цикл, композиция, события)
 #   main.c    — сборка подсистем, запуск цикла
@@ -21,19 +22,22 @@ SRC_DIR  := src
 CORE_DIR := $(SRC_DIR)/core
 GFX_DIR  := $(SRC_DIR)/gfx
 APPS_DIR := $(SRC_DIR)/apps
+NET_DIR  := $(SRC_DIR)/net
 PLAT_DIR := $(SRC_DIR)/platform
 INC_DIR  := $(SRC_DIR)/include
 BUILD_DIR:= build
 WEB_DIR  := web
 ASSETS   := assets
+NET_LIBS :=
 
 # ===== Источники =====
-SRC_CORE := \
-  $(CORE_DIR)/wm.c \
-  $(CORE_DIR)/window.c \
-  $(CORE_DIR)/damage.c \
-  $(CORE_DIR)/input.c \
-  $(CORE_DIR)/timing.c
+SRC_CORE :=                \
+  $(CORE_DIR)/wm.c         \
+  $(CORE_DIR)/window.c     \
+  $(CORE_DIR)/damage.c     \
+  $(CORE_DIR)/input.c      \
+  $(CORE_DIR)/timing.c     \
+  $(CORE_DIR)/loop_hooks.c
 
 SRC_GFX := \
   $(GFX_DIR)/surface.c \
@@ -50,13 +54,29 @@ SRC_APPS := \
   $(APPS_DIR)/win_paint.c \
   $(APPS_DIR)/win_square.c \
   $(APPS_DIR)/win_console.c \
+  $(APPS_DIR)/echo_component.c \
+
 
 SRC_PLAT := \
   $(PLAT_DIR)/platform_sdl.c
 
+SRC_NET := \
+  $(NET_DIR)/poller.c
+
+# ====== Сеть (кроссплатформенно) ======
+# native: выбираем POSIX/Win32
+ifeq ($(OS),Windows_NT)
+  SRC_NET := $(NET_DIR)/net_win32.c
+  NET_LIBS += -lws2_32
+else
+  SRC_NET := $(NET_DIR)/net_posix.c
+endif
+# wasm: подменим на заглушку при сборке emcc
+WEB_NET := $(NET_DIR)/net_stub_emscripten.c
+
 SRC_MAIN := main.c
 
-SRC_C := $(SRC_CORE) $(SRC_GFX) $(SRC_APPS) $(SRC_PLAT) $(SRC_MAIN)
+SRC_C := $(SRC_CORE) $(SRC_GFX) $(SRC_APPS) $(SRC_PLAT) $(SRC_NET) $(SRC_MAIN)
 
 # ===== Unity build (опционально: make UNITY=1) =====
 # Собираем один файл unity_all.c, который #include-ит все *.c
@@ -156,7 +176,7 @@ all: $(BIN)
 $(BIN): $(DIRS_TO_CREATE) $(OBJ)
 	@echo "CFLAGS: $(CFLAGS) $(SDL2_CFLAGS) $(TTF_CFLAGS)"
 	@echo "LIBS  : $(SDL2_LIBS) $(TTF_LIBS)"
-	$(Q)$(CC) $(OBJ) -o $@ $(LDFLAGS) $(SDL2_LIBS) $(TTF_LIBS) -lm
+	$(Q)$(CC) $(OBJ) -o $@ $(LDFLAGS) $(SDL2_LIBS) $(TTF_LIBS) $(NET_LIBS) -lm
 
 # ======= Компиляция .c → build/...o с автозависимостями =======
 # unity: генерим объединённый файл, чтобы сохранялись пути включений
@@ -164,10 +184,10 @@ ifeq ($(UNITY),1)
   UNITY_FILE := $(BUILD_DIR)/unity_all.c
   SRC_C      := $(UNITY_FILE)
   OBJ        := $(BUILD_DIR)/unity_all.o
-$(UNITY_FILE): $(SRC_CORE) $(SRC_GFX) $(SRC_APPS) $(SRC_PLAT) $(SRC_MAIN) | $(BUILD_DIR)/
+$(UNITY_FILE): $(SRC_CORE) $(SRC_GFX) $(SRC_APPS) $(SRC_PLAT) $(SRC_NET) $(SRC_MAIN) | $(BUILD_DIR)/
 	@echo "/* автогенерируемый unity build */" > $@
 	@echo "#include <stdio.h>" >> $@
-	@$(foreach F,$(filter-out $(UNITY_FILE),$(SRC_CORE) $(SRC_GFX) $(SRC_APPS) $(SRC_PLAT) $(SRC_MAIN)), \
+	@$(foreach F,$(filter-out $(UNITY_FILE),$(SRC_CORE) $(SRC_GFX) $(SRC_APPS) $(SRC_PLAT) $(SRC_NET) $(SRC_MAIN)), \
 		echo "#include \"../$(F)\"" >> $@;)
 
 # Спец-правило компиляции именно этого файла (обходит паттерн %.o: %.c)
@@ -205,10 +225,12 @@ linux:  all
 
 windows-mingw: CC?=x86_64-w64-mingw32-gcc
 windows-mingw: EXEEXT=.exe
+windows-mingw: NET_LIBS+=-lws2_32
 windows-mingw: all
 
 windows-msys: CC?=gcc
 windows-msys: EXEEXT=.exe
+windows-msys: NET_LIBS+=-lws2_32
 windows-msys: all
 
 # ======= WebAssembly (Emscripten) =======
@@ -222,6 +244,9 @@ wasm: $(WEB_OUT)
 
 $(WEB_OUT): $(WEB_SRCS) $(WEB_DIR)/.assets | $(WEB_DIR)
 	@echo "emcc: $(WEB_SRCS)"
+	# Заменяем native-бэкенд сети на wasm-заглушку
+	$(eval WEB_SRCS := $(filter-out $(SRC_NET),$(WEB_SRCS)))
+	$(eval WEB_SRCS := $(WEB_SRCS) $(WEB_NET))
 	$(Q)$(EMCC) $(filter-out -MMD -MP,$(CFLAGS)) $(CPPFLAGS) $(WEB_SRCS) $(EMCFLAGS) \
 	  --preload-file $(WEB_DIR)/assets@/assets \
 	  -o $(WEB_OUT)

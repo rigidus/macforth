@@ -358,7 +358,6 @@ void con_sink_insert_widget_color(ConsoleSink* s, int user_id, uint8_t initial_r
         uint8_t init   = initial_r0_255;
         op.init_blob = &init; op.init_size = 1;
         op.init_hash = fnv1a64(&init, 1);
-        blob_put_local(&s->blobs, op.init_hash, &init, 1);
         /* класть в локальный кэш инстанса sink’а */
         blob_put_local(&s->blobs, op.init_hash, &init, 1);
         pending_add(s, op.op_id);

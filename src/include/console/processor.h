@@ -1,5 +1,6 @@
 #pragma once
 #include "store.h"
+#include "net/net.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -18,6 +19,9 @@ extern "C" {
 
     /* дать процессору доступ к Sink для публикации ответов/виджетов. */
     void con_processor_set_sink(ConsoleProcessor*, ConsoleSink* sink);
+
+    /* дать процессору доступ к сетевому поллеру */
+    void con_processor_set_net(ConsoleProcessor*, NetPoller* np);
 
 #ifdef __cplusplus
 }

@@ -1,6 +1,8 @@
 #include "console/processor.h"
 #include "console/store.h"
 #include "console/sink.h"
+#include "net/net.h"
+#include "apps/echo_component.h"
 #include "apps/widget_color.h"
 #include <SDL.h>
 #include <string.h>
@@ -11,6 +13,8 @@
 struct ConsoleProcessor {
     ConsoleStore* store;
     ConsoleSink*  sink;  /* публикация ответов/виджетов через Sink */
+    NetPoller*    np;    /* поллер из main */
+    Echo*         echo;  /* эхо-компонент (сервер/клиент) */
 };
 
 /* вспомогательное — распечатать список виджетов с их ID (последние N) */
@@ -47,15 +51,24 @@ ConsoleProcessor* con_processor_create(ConsoleStore* store){
     ConsoleProcessor* p = (ConsoleProcessor*)calloc(1, sizeof(ConsoleProcessor));
     if (!p) return NULL;
     p->store = store;
+    p->np    = NULL;
+    p->echo  = NULL;
     return p;
 }
 
 void con_processor_destroy(ConsoleProcessor* p){
     if (!p) return;
+    /* Закрыть сеть/сокеты до разрушения поллера */
+    if (p->echo) { echo_destroy(p->echo); p->echo = NULL; }
     free(p);
 }
 
 void con_processor_set_sink(ConsoleProcessor* p, ConsoleSink* s){ if (p) p->sink = s; }
+
+void con_processor_set_net(ConsoleProcessor* p, NetPoller* np){
+    if (!p) return;
+    p->np = np;
+}
 
 static void trim_leading(const char** p){
     const char* s = *p;
@@ -76,7 +89,9 @@ void con_processor_on_command(ConsoleProcessor* p, const char* line){
 
     if (starts_with(s, "help")){
         reply(p, "commands: help | echo <text> | time | color | widgets | color set <id> <0..255>");
+        reply(p, "net: net leader [port] | net client <ip> [port] | net stop");
         return;
+
     }
     if (starts_with(s, "echo")){
         s += 4; trim_leading(&s);
@@ -103,6 +118,45 @@ void con_processor_on_command(ConsoleProcessor* p, const char* line){
         s += strlen("color set");
         trim_leading(&s);
         cmd_color_set(p, s);
+        return;
+    }
+    /* ===== сеть: эхо-компонент ===== */
+    if (starts_with(s, "net")){
+        if (!p->np){
+            reply(p, "net: поллер недоступен на этой платформе (возможно WebAssembly).");
+            return;
+        }
+        s += 3; trim_leading(&s);
+        if (starts_with(s, "leader")){
+            s += 6; trim_leading(&s);
+            int port = 33333;
+            if (*s) { int tmp=0; if (sscanf(s, "%d", &tmp)==1 && tmp>0 && tmp<65536) port=tmp; }
+            if (!p->echo) p->echo = echo_create(p->np, p->sink);
+            int rc = echo_start_leader(p->echo, (uint16_t)port);
+            if (rc==0) { char buf[64]; SDL_snprintf(buf,sizeof(buf),"net: leader listening on %d", port); reply(p, buf); }
+            else { reply(p, "net: failed to start leader"); }
+            return;
+        }
+        if (starts_with(s, "client")){
+            s += 6; trim_leading(&s);
+            char ip[64]=""; int port=33333;
+            if (sscanf(s, "%63s %d", ip, &port) < 1){ reply(p, "usage: net client <ip> [port]"); return; }
+            if (port<=0 || port>=65536) port=33333;
+            if (!p->echo) p->echo = echo_create(p->np, p->sink);
+            int rc = echo_start_client(p->echo, ip, (uint16_t)port);
+            if (rc==0){
+                char buf[96]; SDL_snprintf(buf,sizeof(buf),"net: client connecting to %s:%d", ip, port); reply(p, buf);
+            } else {
+                reply(p, "net: failed to start client");
+            }
+            return;
+        }
+        if (starts_with(s, "stop")){
+            if (p->echo){ echo_destroy(p->echo); p->echo=NULL; reply(p, "net: stopped"); }
+            else reply(p, "net: nothing to stop");
+            return;
+        }
+        reply(p, "net: unknown subcommand. Try 'help'.");
         return;
     }
     reply(p, "unknown command. try 'help'");
