@@ -3,8 +3,6 @@
 #include <stdint.h>
 #include "console/widget.h"
 
-#define CON_POS_MAX_DEPTH 8
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -17,6 +15,13 @@ extern "C" {
 
 #ifndef CON_BUF_LINES
 #define CON_BUF_LINES  1024
+#endif
+
+#define CON_POS_MAX_DEPTH 8
+
+/* Лимит пользователей для промптов/индикаторов (держим синхронно с WM_MAX_USERS) */
+#ifndef CON_MAX_USERS
+#define CON_MAX_USERS 8
 #endif
 
     /*  стабильные ID элементов (для адресации в сети/CRDT) */
@@ -92,6 +97,25 @@ extern "C" {
 
     /* Геттер автора записи (user_id, либо -1 если системная/без автора) по видимому индексу. */
     int             con_store_get_user(const ConsoleStore*, int index);
+
+
+    /* ====== Состояние промптов - хранится в Store ======
+       - Локальный узел держит ПОЛНЫЙ текст каждого user_id, но UI других вьюх не показывает его.
+       - Сеть/репликация передаёт только метаданные: edits++ и nonempty (1/0). */
+
+    /* Локальные правки буфера промпта (обновляют edits при bump_counter!=0) */
+    void  con_store_prompt_insert(ConsoleStore*, int user_id, const char* utf8, int bump_counter);
+    void  con_store_prompt_backspace(ConsoleStore*, int user_id, int bump_counter);
+    /* Забрать строку и очистить буфер. Возвращает кол-во байт скопировано. */
+    int   con_store_prompt_take(ConsoleStore*, int user_id, char* out, int cap);
+    /* Подглядеть текущее содержимое (для своего user_id, UI решает, что показывать) */
+    int   con_store_prompt_peek(const ConsoleStore*, int user_id, char* out, int cap);
+    /* Текущая длина буфера */
+    int   con_store_prompt_len(const ConsoleStore*, int user_id);
+    /* Метаданные для UI (для любого user_id): nonempty (0/1) и счётчик правок */
+    void  con_store_prompt_get_meta(const ConsoleStore*, int user_id, int* out_nonempty, int* out_edits);
+    /* Применить «удалённую» метку (репликация): увеличить edits на inc и установить nonempty */
+    void  con_store_prompt_apply_meta(ConsoleStore*, int user_id, int edits_inc, int nonempty_flag);
 
 #ifdef __cplusplus
 }

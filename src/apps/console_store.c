@@ -89,6 +89,14 @@ struct ConsoleStore {
     /* отсортированный порядок отображения: индексы в entries[] */
     int   order[CON_BUF_LINES];
     int   order_valid;
+
+    /* --- состояние промптов и индикаторы ввода (по user_id) --- */
+    struct {
+        int   len;
+        int   edits;
+        int   nonempty; /* 0/1 */
+        char  buf[CON_MAX_LINE];
+    } prompts[CON_MAX_USERS];
 };
 
 /* ===== Утилиты ===== */
@@ -231,6 +239,8 @@ ConsoleStore* con_store_create(void){
     st->head = 0;
     st->count = 0;
     st->order_valid = 0;
+    /* промпты по умолчанию пустые */
+    for (int i=0;i<CON_MAX_USERS;i++){ st->prompts[i].len=0; st->prompts[i].buf[0]=0; st->prompts[i].edits=0; st->prompts[i].nonempty=0; }
     /* подписки/колбеки по умолчанию уже обнулены calloc'ом */
     return st;
 }
@@ -469,4 +479,70 @@ ConItemId con_store_last_id(const ConsoleStore* st){
     if (!st->order_valid) rebuild_order((ConsoleStore*)st);
     int phys = st->order[st->count-1];
     return st->entries[phys].id;
+}
+
+/* ===== Промпты (M2) ===== */
+static inline int valid_uid(int uid){ return uid>=0 && uid<CON_MAX_USERS; }
+
+void con_store_prompt_insert(ConsoleStore* st, int user_id, const char* utf8, int bump){
+    if (!st || !valid_uid(user_id) || !utf8) return;
+    int *len = &st->prompts[user_id].len;
+    char* buf =  st->prompts[user_id].buf;
+    while (*utf8 && *len < CON_MAX_LINE-1){
+        buf[(*len)++] = *utf8++;
+    }
+    buf[*len]=0;
+    st->prompts[user_id].nonempty = (*len>0)?1:0;
+    if (bump) st->prompts[user_id].edits++;
+    notify(st);
+}
+
+void con_store_prompt_backspace(ConsoleStore* st, int user_id, int bump){
+    if (!st || !valid_uid(user_id)) return;
+    int *len = &st->prompts[user_id].len;
+    if (*len>0){ st->prompts[user_id].buf[--(*len)] = 0; }
+    st->prompts[user_id].nonempty = (*len>0)?1:0;
+    if (bump) st->prompts[user_id].edits++;
+    notify(st);
+}
+
+int con_store_prompt_take(ConsoleStore* st, int user_id, char* out, int cap){
+    if (!st || !valid_uid(user_id) || !out || cap<=0) return 0;
+    int n = st->prompts[user_id].len;
+    if (n > cap-1) n = cap-1;
+    if (n>0) memcpy(out, st->prompts[user_id].buf, n);
+    out[n]=0;
+    st->prompts[user_id].len = 0;
+    st->prompts[user_id].buf[0]=0;
+    st->prompts[user_id].nonempty = 0;
+    notify(st);
+    return n;
+}
+
+int con_store_prompt_peek(const ConsoleStore* st, int user_id, char* out, int cap){
+    if (!st || !valid_uid(user_id) || !out || cap<=0) return 0;
+    int n = st->prompts[user_id].len;
+    if (n > cap-1) n = cap-1;
+    if (n>0) memcpy(out, st->prompts[user_id].buf, n);
+    out[n]=0;
+    return n;
+}
+
+int con_store_prompt_len(const ConsoleStore* st, int user_id){
+    if (!st || !valid_uid(user_id)) return 0;
+    return st->prompts[user_id].len;
+}
+
+void con_store_prompt_get_meta(const ConsoleStore* st, int user_id, int* out_nonempty, int* out_edits){
+    if (!st || !valid_uid(user_id)) return;
+    if (out_nonempty) *out_nonempty = st->prompts[user_id].nonempty;
+    if (out_edits)    *out_edits    = st->prompts[user_id].edits;
+}
+
+void con_store_prompt_apply_meta(ConsoleStore* st, int user_id, int edits_inc, int nonempty_flag){
+    if (!st || !valid_uid(user_id)) return;
+    if (edits_inc>0) st->prompts[user_id].edits += edits_inc;
+    st->prompts[user_id].nonempty = nonempty_flag ? 1 : 0;
+    /* содержимое buf не трогаем — оно локальное */
+    notify(st);
 }

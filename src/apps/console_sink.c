@@ -184,6 +184,11 @@ static void on_confirm(void* user, const ConOp* op){
         }
         break;
     }
+    case CON_OP_PROMPT_META: {
+        /* применяем ТОЛЬКО индикатор (edits++, nonempty), без текста */
+        con_store_prompt_apply_meta(s->store, op->user_id, op->prompt_edits_inc, op->prompt_nonempty);
+        break;
+    }
     default: break;
     }
 }
@@ -212,6 +217,49 @@ ConsoleSink* con_sink_create(ConsoleStore* store, ConsoleProcessor* proc, Replic
 void con_sink_destroy(ConsoleSink* s){
     if (!s) return;
     free(s);
+}
+
+/* ===== M2: операции промпта — локальная правка + рассылка индикатора ===== */
+static void publish_prompt_meta(ConsoleSink* s, int user_id){
+    if (!s || !s->repl) return;
+    int nonempty = con_store_prompt_len(s->store, user_id) > 0 ? 1 : 0;
+    ConOp op = (ConOp){0};
+    op.op_id   = ((uint64_t)s->actor_id<<32) | (s->next_op_id++);
+    op.hlc     = con_sink_tick_hlc(s, SDL_GetTicks());
+    op.actor_id= s->actor_id;
+    op.console_id = s->console_id;
+    op.user_id = user_id;
+    op.type    = CON_OP_PROMPT_META;
+    op.prompt_edits_inc = 1;
+    op.prompt_nonempty  = nonempty;
+    pending_add(s, op.op_id);
+    replicator_publish(s->repl, &op);
+}
+
+void con_sink_submit_text(ConsoleSink* s, int user_id, const char* utf8){
+    if (!s || !utf8) return;
+    /* локально меняем буфер промпта */
+    con_store_prompt_insert(s->store, user_id, utf8, /*bump=*/1);
+    /* и шлём только метаданные */
+    publish_prompt_meta(s, user_id);
+}
+
+void con_sink_backspace(ConsoleSink* s, int user_id){
+    if (!s) return;
+    con_store_prompt_backspace(s->store, user_id, /*bump=*/1);
+    publish_prompt_meta(s, user_id);
+}
+
+void con_sink_commit(ConsoleSink* s, int user_id){
+    if (!s) return;
+    char line[CON_MAX_LINE];
+    int n = con_store_prompt_take(s->store, user_id, line, (int)sizeof(line));
+    /* после очистки буфера — обновим индикатор (nonempty=0) */
+    publish_prompt_meta(s, user_id);
+    if (n>0){
+        /* добавить как команду (CRDT-вставка текста в хвост + выполнить процессором) */
+        con_sink_commit_text_command(s, user_id, line);
+    }
 }
 
 /* ===== публикация готовой строки (выход процессора) ===== */

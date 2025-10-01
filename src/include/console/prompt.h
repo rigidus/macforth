@@ -4,6 +4,10 @@
 #include "gfx/surface.h"
 #include "core/window.h"     /* InputEvent */
 #include "console/sink.h"    /* ConsoleSink */
+#include "gfx/surface.h"
+#include "core/window.h"     /* InputEvent */
+#include "console/sink.h"    /* ConsoleSink */
+#include "console/store.h"   /* ConsoleStore */
 
 #ifdef __cplusplus
 extern "C" {
@@ -11,8 +15,9 @@ extern "C" {
 
     typedef struct ConsolePrompt ConsolePrompt;
 
-    /* Создать/удалить промпт, связанный с конкретным пользователем и sink’ом. */
-    ConsolePrompt* con_prompt_create(int user_id, ConsoleSink* sink);
+    /* Создать/удалить промпт, связанный с конкретным пользователем и sink’ом.
+       Вся строка ввода теперь хранится в ConsoleStore (а не во View). */
+    ConsolePrompt* con_prompt_create(int user_id, ConsoleSink* sink, ConsoleStore* store);
     void           con_prompt_destroy(ConsolePrompt*);
 
     /* Настройки цветов (опционально). */
@@ -27,17 +32,17 @@ extern "C" {
     /* Обработка ввода. Возвращает 1, если нужно перерисовать. */
     int  con_prompt_on_event(ConsolePrompt*, const InputEvent* e);
 
-    /* Явные операции редактирования — пригодятся для DnD. */
+    /* Явные операции редактирования — проксируют в Store через Sink (c репликацией индикатора). */
     void con_prompt_insert_text(ConsolePrompt*, const char* utf8);
     void con_prompt_backspace(ConsolePrompt*);
-    void con_prompt_commit(ConsolePrompt*); /* Отправляет строку через sink->commit_text_command */
+    void con_prompt_commit(ConsolePrompt*); /* Берёт текст из Store и коммитит через Sink */
 
     /* Drop payload → вставить текстовое представление в буфер. */
     void con_prompt_on_drop(ConsolePrompt*, const char* mime, const void* data, size_t size);
 
     /* Вспомогательные геттеры (например, для хит-тестов/дебага). */
     int  con_prompt_get_user_id(const ConsolePrompt*);
-    int  con_prompt_get_text(char* out, int cap);
+    int  con_prompt_get_text(char* out, int cap); /* (оставлено для совместимости; вернёт 0) */
 
 #ifdef __cplusplus
 }

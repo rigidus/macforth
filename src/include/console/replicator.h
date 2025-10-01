@@ -15,7 +15,8 @@ extern "C" {
         CON_OP_WIDGET_MSG   = 5,
         CON_OP_WIDGET_DELTA = 6,
         CON_OP_INSERT_TEXT  = 7, /* CRDT-вставка текста по позиции */
-        CON_OP_INSERT_WIDGET= 8  /* CRDT-вставка виджета по позиции */
+        CON_OP_INSERT_WIDGET= 8, /* CRDT-вставка виджета по позиции */
+        CON_OP_PROMPT_META  = 9  /* только метаданные промпта: edits_inc, nonempty */
     } ConOpType;
 
     typedef struct {
@@ -40,6 +41,9 @@ extern "C" {
         const void* init_blob;
         size_t      init_size;
         uint64_t    init_hash;     /* контент-адрес (FNV-1a 64) для init_blob */
+        /* --- PROMPT_META --- */
+        int         prompt_edits_inc; /* обычно 1 */
+        int         prompt_nonempty;  /* 0/1 */
     } ConOp;
 
     typedef struct Replicator Replicator;

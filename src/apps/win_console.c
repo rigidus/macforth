@@ -194,8 +194,27 @@ static void console_draw(Window *w, const Rect *area){
         con_prompt_set_colors(st->prompt, 0xFF0A0A0A, 0xFFFFFFFF);
         con_prompt_draw(st->prompt, w->cache, 4, y0+4, surface_w(w->cache)-8, st->bot_h-8);
         draw_border_rect(w->cache, 2, y0+2, surface_w(w->cache)-4, st->bot_h-4, USER_COLORS[st->prompt_user_id & 1]);
+        /* --- индикаторы «кто-то печатает» для других пользователей --- */
+        int glyph_h=16, dummy_w=8; text_measure_utf8("M",&dummy_w,&glyph_h);
+        int label_y = y0 + st->bot_h - glyph_h - 2;
+        for (int uid=0; uid<2 /* демо: 0..1 */; ++uid){
+            if (uid == st->prompt_user_id) continue;
+            int nonempty=0, edits=0;
+            con_store_prompt_get_meta(st->store, uid, &nonempty, &edits);
+            if (nonempty){
+                char msg[64];
+                SDL_snprintf(msg, sizeof(msg), "user_%d typing [%d]", uid, edits);
+                Surface* g = text_render_utf8(msg, USER_COLORS[uid & 1]);
+                if (g){
+                    /* рисуем справа от поля */
+                    int gx = surface_w(w->cache) - surface_w(g) - 8;
+                    if (gx < 8) gx = 8;
+                    surface_blit(g, 0,0, surface_w(g), surface_h(g), w->cache, gx, label_y);
+                    surface_free(g);
+                }
+            }
+        }
     }
-
     w->invalid_all = false;
     st->dirty_rows_mask = 0; /* сбрасываем частичную «грязь» */
 }
@@ -515,7 +534,7 @@ void win_console_init(Window *w, Rect frame, int z, ConsoleStore* store, Console
 
     /* промпт для конкретного пользователя внизу */
     st->prompt_user_id = prompt_user_id;
-    st->prompt = con_prompt_create(prompt_user_id, sink);
+    st->prompt = con_prompt_create(prompt_user_id, sink, store);
     /* цвета промптов можно оставить дефолтными — бордеры рисуем сами */
 
     st->dirty_rows_mask = 0;
