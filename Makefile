@@ -50,7 +50,6 @@ SRC_APPS := \
   $(APPS_DIR)/win_paint.c \
   $(APPS_DIR)/win_square.c \
   $(APPS_DIR)/win_console.c \
-  $(APPS_DIR)/win_prompts.c
 
 SRC_PLAT := \
   $(PLAT_DIR)/platform_sdl.c

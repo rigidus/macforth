@@ -46,11 +46,6 @@ extern "C" {
        используя actor_id эмитента. Детали: расширяет глубину при нехватке «места». */
     ConPosId con_store_gen_between(const ConsoleStore*, ConItemId left, ConItemId right, uint32_t actor_id);
 
-    /* Вставки по заданной позиции/ID (идемпотентно: если id уже существует — игнор). */
-    ConItemId con_store_insert_text_at(ConsoleStore*, ConItemId forced_id, const ConPosId* pos, const char* s);
-    ConItemId con_store_insert_widget_at(ConsoleStore*, ConItemId forced_id, const ConPosId* pos, ConsoleWidget* w);
-
-
     /* Тип записи ленты */
     typedef enum {
         CON_ENTRY_TEXT   = 1,
@@ -90,6 +85,13 @@ extern "C" {
     /* Вспомогательное: получить последний видимый ID (0, если пусто). */
     ConItemId       con_store_last_id(const ConsoleStore*);
 
+    /* ==== CRDT-вставки с указанием автора (user_id) ==== */
+    /* Идемпотентные вставки по позиции с заданным ID: */
+    ConItemId       con_store_insert_text_at(ConsoleStore*, ConItemId forced_id, const ConPosId* pos, const char* s, int user_id);
+    ConItemId       con_store_insert_widget_at(ConsoleStore*, ConItemId forced_id, const ConPosId* pos, ConsoleWidget* w, int user_id);
+
+    /* Геттер автора записи (user_id, либо -1 если системная/без автора) по видимому индексу. */
+    int             con_store_get_user(const ConsoleStore*, int index);
 
 #ifdef __cplusplus
 }

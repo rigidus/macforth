@@ -12,7 +12,6 @@
 #include "apps/win_paint.h"
 #include "apps/win_square.h"
 #include "apps/win_console.h"
-#include "apps/win_prompts.h"
 #include "console/store.h"
 #include "console/processor.h"
 #include "console/replicator.h"
@@ -88,19 +87,9 @@ int main(void) {
     /* Выделим идентификатор ленты/консоли (для одного demo — просто 1) */
     uint64_t console_id = 1;
 
-    /* sink для промптов (публикует, но не слушает подтверждения) */
-    ConsoleSink* con_sink_for_prompts = con_sink_create(con_store, con_proc, repl, console_id, 0);
-    /* sink для консоли (и публикует, и слушает подтверждения → reconcile) */
-    ConsoleSink* con_sink_for_console = con_sink_create(con_store, con_proc, repl, console_id, 1);
+    /* единый sink для консоли (и публикует, и слушает подтверждения) */
+    ConsoleSink* con_sink_for_console = con_sink_create(con_store, con_proc, repl,  console_id, 1);
 
-    /* окно с двумя промптами (user_1=0, user_2=1) */
-    static Window wprompts;
-    int ph = 80; /* две строки c отступами */
-    win_prompts_init(&wprompts,
-                     rect_make(20, 20, sw-40, ph),
-                     90,
-                     con_sink_for_prompts);
-    wm_add(wm, &wprompts);
 
     // консоль
     static Window wcon;
@@ -129,8 +118,6 @@ int main(void) {
     text_shutdown();
 
 
-    /* Sink для промптов */
-    con_sink_destroy(con_sink_for_prompts);
 
     /* Sink консоли */
     con_sink_destroy(con_sink_for_console);

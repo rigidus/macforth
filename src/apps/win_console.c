@@ -15,8 +15,12 @@
 #include "apps/widget_color.h"
 #include "apps/win_square.h" /* для SquarePayload из DnD */
 #include "console/delta.h"
+#include "console/prompt.h"
 
 #define MIME_CMD_TEXT "application/x-console-cmd-text"
+
+/* Цвета пользователей для бордеров и окраски команд */
+static const uint32_t USER_COLORS[2] = { 0xFF3B82F6, /* user0: синий */ 0xFF22C55E /* user1: зелёный */ };
 
 typedef struct {
     /* сетка и метрики */
@@ -42,6 +46,12 @@ typedef struct {
     int   drag_start_mx;    /* экранные координаты press для порога */
     int   drag_start_my;
     int   drag_src_index;   /* индекс строки истории под курсором при press */
+
+    /* Промпты внутри консоли */
+    ConsolePrompt* p_user1; /* user_id=0, верх */
+    ConsolePrompt* p_user2; /* user_id=1, низ */
+    int top_h;
+    int bot_h;
 } ConsoleViewState;
 
 /* ---------- utils ---------- */
@@ -68,7 +78,8 @@ typedef struct {
 
 static HistoryLayout layout_compute(ConsoleViewState* st){
     HistoryLayout L={0};
-    L.history_rows = st->rows; if (L.history_rows < 0) L.history_rows = 0;
+    /* rows задаются при изменении кадра (console_on_frame_changed) */
+    L.history_rows = st->rows;
     int total = con_store_count(st->store);
     int start = total - L.history_rows; if (start < 0) start = 0;
     L.start_index = start;
@@ -76,15 +87,14 @@ static HistoryLayout layout_compute(ConsoleViewState* st){
 }
 
 /* Возвращает индекс элемента Store под локальной координатой (lx,ly) в истории,
-   либо -1 если это зона редактирования (последняя строка) или вне видимой истории. */
+   либо -1 если вне видимой истории или попали в промпты. */
 static int layout_hit_item(ConsoleViewState* st, int lx, int ly, int* out_cell_x, int* out_cell_y){
     (void)lx;
+    int row = (ly - st->top_h) / st->cell_h;
     HistoryLayout L = layout_compute(st);
-    int row = ly / st->cell_h;
-    if (row < 0 || row >= st->rows) return -1;
-    if (row >= L.history_rows) return -1;
+    if (row < 0 || row >= L.history_rows) return -1;
     if (out_cell_x) *out_cell_x = 0;
-    if (out_cell_y) *out_cell_y = row * st->cell_h;
+    if (out_cell_y) *out_cell_y = st->top_h + row * st->cell_h;
     return L.start_index + row;
 }
 
@@ -93,21 +103,17 @@ static void console_on_frame_changed(Window* w, int old_w, int old_h){
     (void)old_w; (void)old_h;
     ConsoleViewState *st = (ConsoleViewState*)w->user;
     console_measure(st, surface_w(w->cache), surface_h(w->cache));
+    /* высоты промптов: по метрике шрифта + отступы */
+    int wM=0,hM=0; text_measure_utf8("M",&wM,&hM);
+    int pad = 6;
+    st->top_h = hM + pad*2;
+    st->bot_h = hM + pad*2;
+    /* сколько строк в истории помещается между промптами */
+    int middle_h = surface_h(w->cache) - st->top_h - st->bot_h;
+    if (middle_h < st->cell_h) middle_h = st->cell_h;
+    st->rows = middle_h / st->cell_h;
     w->invalid_all = true;
     st->dirty_rows_mask = 0; /* смена размера — проще перерисовать всё */
-}
-
-static void console_dirty_line(Window* w, ConsoleViewState* st, int vis_row){
-    if (vis_row<0 || vis_row>=st->rows) return;
-    Rect r = rect_make(w->frame.x, w->frame.y + vis_row*st->cell_h,
-                       st->cols*st->cell_w, st->cell_h);
-    window_invalidate(w, r);
-    /* отметим строку как «грязную» для частичного redraw */
-    if (vis_row < 64){
-        st->dirty_rows_mask |= (1ull << (uint64_t)vis_row);
-    } else {
-        st->dirty_rows_mask = 0; /* слишком много строк — редравим всё */
-    }
 }
 
 
@@ -128,7 +134,7 @@ static void s_draw_history_row(Window* w, ConsoleViewState* st, const HistoryLay
     if (row < 0 || row >= L->history_rows) return;
     int idx = L->start_index + row;
     if (idx < 0 || idx >= con_store_count(st->store)) return;
-    int y = row * st->cell_h;
+    int y = st->top_h + row * st->cell_h;
     /* затираем фон полосы строки */
     surface_fill_rect(w->cache, 0, y, st->cols*st->cell_w, st->cell_h, st->col_bg);
     ConsoleWidget* cw = con_store_get_widget(st->store, idx);
@@ -137,10 +143,22 @@ static void s_draw_history_row(Window* w, ConsoleViewState* st, const HistoryLay
     } else {
         const char *s = con_store_get_line(st->store, idx);
         if (!s) s = "";
-        draw_line_text(w->cache, 0, y + baseline_off, s, st->col_fg);
+        /* выбираем цвет текста по user_id источника */
+        int uid = con_store_get_user(st->store, idx);
+        uint32_t col = st->col_fg;
+        if (uid==0) col = USER_COLORS[0];
+        else if (uid==1) col = USER_COLORS[1];
+        draw_line_text(w->cache, 0, y + baseline_off, s, col);
     }
 }
 
+
+static void draw_border_rect(Surface* dst, int x,int y,int w,int h, uint32_t col){
+    surface_fill_rect(dst, x, y, w, 1, col);
+    surface_fill_rect(dst, x, y+h-1, w, 1, col);
+    surface_fill_rect(dst, x, y, 1, h, col);
+    surface_fill_rect(dst, x+w-1, y, 1, h, col);
+}
 
 static void console_draw(Window *w, const Rect *area){
     (void)area;
@@ -151,6 +169,13 @@ static void console_draw(Window *w, const Rect *area){
     if (st->dirty_rows_mask == 0){
         /* полный кадр */
         surface_fill(w->cache, st->col_bg);
+    }
+
+    /* --- верхний промпт (user 0) --- */
+    if (st->p_user1){
+        con_prompt_set_colors(st->p_user1, 0xFF0A0A0A, 0xFFFFFFFF);
+        con_prompt_draw(st->p_user1, w->cache, 4, 4, surface_w(w->cache)-8, st->top_h-8);
+        draw_border_rect(w->cache, 2, 2, surface_w(w->cache)-4, st->top_h-4, USER_COLORS[0]);
     }
 
     HistoryLayout L = layout_compute(st);
@@ -169,6 +194,14 @@ static void console_draw(Window *w, const Rect *area){
             if (m & 1ull){ s_draw_history_row(w, st, &L, row, baseline_off); }
             m >>= 1ull;
         }
+    }
+
+    /* --- нижний промпт (user 1) --- */
+    if (st->p_user2){
+        int y0 = surface_h(w->cache) - st->bot_h;
+        con_prompt_set_colors(st->p_user2, 0xFF0A0A0A, 0xFFFFFFFF);
+        con_prompt_draw(st->p_user2, w->cache, 4, y0+4, surface_w(w->cache)-8, st->bot_h-8);
+        draw_border_rect(w->cache, 2, y0+2, surface_w(w->cache)-4, st->bot_h-4, USER_COLORS[1]);
     }
 
     w->invalid_all = false;
@@ -215,10 +248,13 @@ static void console_destroy(Window *w){
 /* ---------- тик анимации (мигание курсора) ---------- */
 
 static void console_tick(Window *w, uint32_t now){
-    (void)now; (void)w;
-
-    /* виджетам всё ещё могут требоваться тики через свою анимацию; окно перерисуется по notify() */
-
+    ConsoleViewState *st = (ConsoleViewState*)w->user;
+    /* тики промптов (мигание курсора внутри них) */
+    if (st->p_user1) con_prompt_tick(st->p_user1, now);
+    if (st->p_user2) con_prompt_tick(st->p_user2, now);
+    /* просто перерисуем всё окно раз в кадр (промпты компактные) */
+    w->invalid_all = true;
+    w->next_anim_ms = next_frame(now);
 }
 
 /* уведомление от Store: помечаем окно к перерисовке */
@@ -236,10 +272,25 @@ static void console_on_event(Window *w, void* wm, const InputEvent *e, int lx, i
 
     (void)wm;
 
+    int H = surface_h(w->cache);
+    int in_top_prompt = (ly >= 0 && ly < st->top_h);
+    int in_bot_prompt = (ly >= H - st->bot_h && ly < H);
+
+    /* Клавиатура/текст → привязка к промпту по user_id (0 → верх, 1 → низ) */
+    if (e->type==1 || e->type==2){
+        ConsolePrompt* tgt = NULL;
+        if (e->user_id==0) tgt = st->p_user1;
+        else if (e->user_id==1) tgt = st->p_user2;
+        if (tgt){
+            if (con_prompt_on_event(tgt, e)) { w->invalid_all = true; }
+            return;
+        }
+    }
+
     /* Сначала — мышь к виджетам в истории (если попали) */
     if (e->type==3 || e->type==4 || e->type==5){
         int cell_x=0, cell_y=0;
-        int idx = layout_hit_item(st, lx, ly, &cell_x, &cell_y);
+        int idx = (!in_top_prompt && !in_bot_prompt) ? layout_hit_item(st, lx, ly, &cell_x, &cell_y) : -1;
         if (idx >= 0){
             ConsoleWidget* cw = con_store_get_widget(st->store, idx);
             if (cw && cw->on_event){
@@ -274,7 +325,7 @@ static void console_on_event(Window *w, void* wm, const InputEvent *e, int lx, i
                         /* как раньше — локальное уведомление (на случай отсутствия sink) */
                         con_store_notify_changed(st->store);
                     }
-                    console_dirty_line(w, st, ly / st->cell_h); /* строка с виджетом */
+                    /* перерисуем строку с виджетом */
                     Rect r = rect_make(w->frame.x, w->frame.y + cell_y, st->cols*st->cell_w, st->cell_h);
                     window_invalidate(w, r);
                     w->invalid_all = true;
@@ -289,7 +340,7 @@ static void console_on_event(Window *w, void* wm, const InputEvent *e, int lx, i
         if (e->mouse.button==1 && e->mouse.state==1){
             /* press — проверим, попали ли по текстовой строке истории */
             int cell_x=0, cell_y=0;
-            int idx = layout_hit_item(st, lx, ly, &cell_x, &cell_y);
+            int idx = (!in_top_prompt && !in_bot_prompt) ? layout_hit_item(st, lx, ly, &cell_x, &cell_y) : -1;
             if (idx >= 0){
                 /* не стартуем drag для строк-виджетов */
                 ConsoleWidget* cw = con_store_get_widget(st->store, idx);
@@ -348,6 +399,19 @@ static void con_drag_leave(Window* w, const WMDrag* d){ (void)w; (void)d; }
 static void con_drag_over(Window* w, WMDrag* d, int lx, int ly){
     (void)w; (void)lx; (void)ly;
     if (!d || !d->mime) { d->effect = WM_DRAG_NONE; return; }
+    ConsoleViewState* st = (ConsoleViewState*)w->user;
+    int H = surface_h(w->cache);
+    int in_top_prompt = (ly >= 0 && ly < st->top_h);
+    int in_bot_prompt = (ly >= H - st->bot_h && ly < H);
+    if (in_top_prompt || in_bot_prompt){
+        if (strcmp(d->mime, "application/x-square")==0 ||
+            strcmp(d->mime, MIME_CMD_TEXT)==0){
+            d->effect = WM_DRAG_COPY;
+        } else {
+            d->effect = WM_DRAG_REJECT;
+        }
+        return;
+    }
     if (strcmp(d->mime, "application/x-square")==0){
         d->effect = WM_DRAG_COPY; /* покажем, что можем вставить в консоль */
     } else if (strcmp(d->mime, MIME_CMD_TEXT)==0){
@@ -361,6 +425,24 @@ static void con_drop(Window* w, WMDrag* d, int lx, int ly){
     (void)lx; (void)ly;
     if (!d || !d->mime) return;
     ConsoleViewState *st = (ConsoleViewState*)w->user;
+    int H = surface_h(w->cache);
+    int in_top_prompt = (ly >= 0 && ly < st->top_h);
+    int in_bot_prompt = (ly >= H - st->bot_h && ly < H);
+
+    if (in_top_prompt || in_bot_prompt){
+        ConsolePrompt* tgt = in_top_prompt ? st->p_user1 : st->p_user2;
+        if (!tgt) { d->effect = WM_DRAG_REJECT; return; }
+        if (strcmp(d->mime, "application/x-square")==0){
+            /* превратим квадрат в s-expr и положим в буфер промпта (делает con_prompt_on_drop) */
+            con_prompt_on_drop(tgt, d->mime, d->data, d->size);
+            d->effect = WM_DRAG_COPY; w->invalid_all = true; return;
+        } else if (strcmp(d->mime, MIME_CMD_TEXT)==0){
+            con_prompt_on_drop(tgt, d->mime, d->data, d->size);
+            d->effect = WM_DRAG_COPY; w->invalid_all = true; return;
+        }
+        d->effect = WM_DRAG_REJECT; return;
+    }
+
     if (strcmp(d->mime, "application/x-square")==0){
         /* Вставляем виджет через CRDT-sink (реплицируемо) */
         uint8_t initial = 128;
@@ -414,12 +496,24 @@ void win_console_init(Window *w, Rect frame, int z, ConsoleStore* store, Console
 
     console_measure(st, surface_w(w->cache), surface_h(w->cache));
 
+    /* высоты промптов по шрифту */
+    int wM=0,hM=0; text_measure_utf8("M",&wM,&hM);
+    int pad=6; st->top_h = hM + pad*2; st->bot_h = hM + pad*2;
+    int middle_h = surface_h(w->cache) - st->top_h - st->bot_h;
+    if (middle_h < st->cell_h) middle_h = st->cell_h;
+    st->rows = middle_h / st->cell_h;
+
     /* модель и sink */
     st->store = store;
     st->proc  = proc;
     st->sink  = sink;
     /* подписка на изменения Store — чтобы вторая вьюха увидела обновления */
     con_store_subscribe(store, on_store_changed, w);
+
+    /* промпты: верх для user 0, низ для user 1 */
+    st->p_user1 = con_prompt_create(0, sink);
+    st->p_user2 = con_prompt_create(1, sink);
+    /* цвета промптов можно оставить дефолтными — бордеры рисуем сами */
 
     st->dirty_rows_mask = 0;
 

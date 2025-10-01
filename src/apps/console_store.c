@@ -69,6 +69,7 @@ typedef struct ConEntry {
     ConEntryType  type;
     ConItemId     id;      /* стабильный ID */
     ConPosId      pos;     /* CRDT-позиция (лексикографическая) */
+    int           user_id; /* источник (для окраски): -1 = системная/неизвестно */
     union {
         struct { char* s; int len; } text;
         ConsoleWidget* widget;
@@ -224,47 +225,13 @@ ConPosId con_store_gen_between(const ConsoleStore* st, ConItemId left, ConItemId
 ConsoleStore* con_store_create(void){
     ConsoleStore* st = (ConsoleStore*)calloc(1, sizeof(ConsoleStore));
     if (!st) return NULL;
-    st->head = 0; st->count = 0;
     st->subs_n = 0;
+    /* Пустой стор без приветственных строк */
     st->next_id = 1;
+    st->head = 0;
+    st->count = 0;
     st->order_valid = 0;
-
-    /* приветствие как обычные TEXT-entry (без notify — подписчиков ещё нет) */
-    {
-        int idx = (st->head + st->count) % CON_BUF_LINES;
-        free_entry(&st->entries[idx]);
-        st->entries[idx].type = CON_ENTRY_TEXT;
-        st->entries[idx].id   = st->next_id++;
-        /* начало диапазона: [0 .. BASE] → возьмём «середину» */
-        st->entries[idx].pos  = pos_between_impl(NULL,NULL,0);
-        const char* hello1 = "console ready. type here...";
-        size_t n = strlen(hello1);
-        st->entries[idx].as.text.s = (char*)malloc(n+1);
-        if (st->entries[idx].as.text.s){
-            memcpy(st->entries[idx].as.text.s, hello1, n);
-            st->entries[idx].as.text.s[n]=0;
-            st->entries[idx].as.text.len = (int)n;
-            if (st->count < CON_BUF_LINES) st->count++;
-            else st->head = (st->head + 1) % CON_BUF_LINES;
-        }
-    }
-    {
-        int idx = (st->head + st->count) % CON_BUF_LINES;
-        free_entry(&st->entries[idx]);
-        st->entries[idx].type = CON_ENTRY_TEXT;
-        st->entries[idx].id   = st->next_id++;
-        st->entries[idx].pos  = pos_between_impl(&st->entries[(idx-1+CON_BUF_LINES)%CON_BUF_LINES].pos,NULL,0);
-        const char* hello2 = "press Enter to commit line";
-        size_t n = strlen(hello2);
-        st->entries[idx].as.text.s = (char*)malloc(n+1);
-        if (st->entries[idx].as.text.s){
-            memcpy(st->entries[idx].as.text.s, hello2, n);
-            st->entries[idx].as.text.s[n]=0;
-            st->entries[idx].as.text.len = (int)n;
-            if (st->count < CON_BUF_LINES) st->count++;
-            else st->head = (st->head + 1) % CON_BUF_LINES;
-        }
-    }
+    /* подписки/колбеки по умолчанию уже обнулены calloc'ом */
     return st;
 }
 
@@ -290,6 +257,7 @@ static void append_line_internal(ConsoleStore* st, const char* s){
     st->entries[idx].type = CON_ENTRY_TEXT;
     st->entries[idx].id   = st->next_id++;
     st->entries[idx].pos  = con_store_gen_between(st, con_store_last_id(st), CON_ITEMID_INVALID, 0);
+    st->entries[idx].user_id = -1;
     size_t n = strlen(s);
     st->entries[idx].as.text.s = (char*)malloc(n + 1);
     if (st->entries[idx].as.text.s){
@@ -309,6 +277,7 @@ static ConItemId append_widget_internal(ConsoleStore* st, ConsoleWidget* w){
     st->entries[idx].type = CON_ENTRY_WIDGET;
     st->entries[idx].id   = st->next_id++;
     st->entries[idx].pos  = con_store_gen_between(st, con_store_last_id(st), CON_ITEMID_INVALID, 0);
+    st->entries[idx].user_id = -1;
     st->entries[idx].as.widget = w;
     ConItemId id = st->entries[idx].id;
     if (st->count < CON_BUF_LINES) st->count++;
@@ -361,6 +330,14 @@ int con_store_get_line_len(const ConsoleStore* st, int index){
     const ConEntry* e = &st->entries[phys];
     if (e->type != CON_ENTRY_TEXT) return 0;
     return e->as.text.len;
+}
+
+int con_store_get_user(const ConsoleStore* st, int index){
+    if (!st || index<0 || index>=st->count) return -1;
+    if (!st->order_valid) rebuild_order((ConsoleStore*)st);
+    int phys = phys_index(st, index);
+    if (phys<0) return -1;
+    return st->entries[phys].user_id;
 }
 
 ConsoleWidget* con_store_get_widget(const ConsoleStore* st, int index){
@@ -447,7 +424,7 @@ ConItemId con_store_insert_text_between(ConsoleStore* st, ConItemId left, ConIte
     return CON_ITEMID_INVALID;
 }
 
-ConItemId con_store_insert_text_at(ConsoleStore* st, ConItemId forced_id, const ConPosId* pos, const char* s){
+ConItemId con_store_insert_text_at(ConsoleStore* st, ConItemId forced_id, const ConPosId* pos, const char* s, int user_id){
     if (!st || !pos || !s) return CON_ITEMID_INVALID;
     if (forced_id && has_id(st, forced_id)) return forced_id; /* идемпотентность */
     int idx = (st->head + st->count) % CON_BUF_LINES;
@@ -455,6 +432,7 @@ ConItemId con_store_insert_text_at(ConsoleStore* st, ConItemId forced_id, const 
     st->entries[idx].type = CON_ENTRY_TEXT;
     st->entries[idx].id   = forced_id ? forced_id : st->next_id++;
     st->entries[idx].pos  = *pos;
+    st->entries[idx].user_id = (user_id>=0)? user_id : -1;
     size_t n = strlen(s);
     st->entries[idx].as.text.s = (char*)malloc(n+1);
     if (st->entries[idx].as.text.s){
@@ -469,7 +447,7 @@ ConItemId con_store_insert_text_at(ConsoleStore* st, ConItemId forced_id, const 
     return CON_ITEMID_INVALID;
 }
 
-ConItemId con_store_insert_widget_at(ConsoleStore* st, ConItemId forced_id, const ConPosId* pos, ConsoleWidget* w){
+ConItemId con_store_insert_widget_at(ConsoleStore* st, ConItemId forced_id, const ConPosId* pos, ConsoleWidget* w, int user_id){
     if (!st || !pos || !w) return CON_ITEMID_INVALID;
     if (forced_id && has_id(st, forced_id)) { con_widget_destroy(w); return forced_id; }
     int idx = (st->head + st->count) % CON_BUF_LINES;
@@ -477,6 +455,7 @@ ConItemId con_store_insert_widget_at(ConsoleStore* st, ConItemId forced_id, cons
     st->entries[idx].type = CON_ENTRY_WIDGET;
     st->entries[idx].id   = forced_id ? forced_id : st->next_id++;
     st->entries[idx].pos  = *pos;
+    st->entries[idx].user_id = (user_id>=0)? user_id : -1;
     st->entries[idx].as.widget = w;
     if (st->count < CON_BUF_LINES) st->count++; else st->head = (st->head + 1) % CON_BUF_LINES;
     notify(st);

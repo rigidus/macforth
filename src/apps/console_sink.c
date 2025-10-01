@@ -119,7 +119,7 @@ static void on_confirm(void* user, const ConOp* op){
             char line2[CON_MAX_LINE];
             size_t n = op->size; if (n >= sizeof(line2)) n = sizeof(line2)-1;
             memcpy(line2, op->data, n); line2[n]=0;
-            con_store_insert_text_at(s->store, op->new_item_id, &op->pos, line2);
+            con_store_insert_text_at(s->store, op->new_item_id, &op->pos, line2, op->user_id);
             if (s->proc) con_processor_on_command(s->proc, line2);
         }
         break;
@@ -133,7 +133,8 @@ static void on_confirm(void* user, const ConOp* op){
                 w = widget_color_create(init);
             }
             if (w){
-                con_store_insert_widget_at(s->store, op->new_item_id, &op->pos, w);
+                con_store_insert_widget_at(s->store, op->new_item_id, &op->pos, w, op->user_id);
+
             }
         }
         break;
@@ -180,7 +181,7 @@ void con_sink_insert_text_tail(ConsoleSink* s, int user_id, const char* utf8_lin
     ConItemId new_id = ((uint64_t)s->actor_id<<32) | (uint64_t)(s->next_item_seq++);
     /* локально — сразу применим у слушателя */
     if (s->is_listener){
-        con_store_insert_text_at(s->store, new_id, &pos, utf8_line);
+        con_store_insert_text_at(s->store, new_id, &pos, utf8_line, user_id);
         if (s->proc) con_processor_on_command(s->proc, utf8_line);
     }
     if (s->repl){
@@ -210,7 +211,7 @@ void con_sink_insert_widget_color(ConsoleSink* s, int user_id, uint8_t initial_r
     /* локально */
     if (s->is_listener){
         ConsoleWidget* w = widget_color_create(initial_r0_255);
-        if (w) con_store_insert_widget_at(s->store, new_id, &pos, w);
+        if (w) con_store_insert_widget_at(s->store, new_id, &pos, w, user_id);
     }
     if (s->repl){
         ConOp op = {0};
