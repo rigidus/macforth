@@ -3,15 +3,13 @@
 #include <string.h>
 #include <stdio.h>
 
+#include "net/tcp.h"
+#include <errno.h>
+
 #if defined(_WIN32)
 #  include <winsock2.h>
-#  include <ws2tcpip.h>
 #else
-#  include <unistd.h>
-#  include <fcntl.h>
-#  include <errno.h>
-#  include <arpa/inet.h>
-#  include <netinet/in.h>
+#  include <sys/types.h>
 #  include <sys/socket.h>
 #endif
 
@@ -81,6 +79,7 @@ static int s_nb_recv(net_fd_t fd, char* buf, int cap){
 #endif
     return rc;
 }
+
 static int s_nb_send(net_fd_t fd, const char* buf, int n){
 #if defined(_WIN32)
     int rc = send(fd, buf, n, 0);
@@ -180,25 +179,14 @@ static void s_on_listen(void* user, net_fd_t fd, int ev){
     if (!(ev & NET_RD)) return;
     int acc = ECHO_ACCEPT_BUDGET;
     while (acc-- > 0){
-        struct sockaddr_in ra; socklen_t rl = (socklen_t)sizeof(ra);
-#if defined(_WIN32)
-        SOCKET cfd = accept(fd, (struct sockaddr*)&ra, &rl);
-        if (cfd == INVALID_SOCKET){
-            int err = WSAGetLastError();
-            if (net_err_would_block(err)) break;
-            break;
-        }
-#else
-        int cfd = accept(fd, (struct sockaddr*)&ra, &rl);
-        if (cfd < 0){
-            if (net_err_would_block(errno)) break;
-            break;
-        }
-#endif
-        net_set_nonblocking((net_fd_t)cfd, 1);
+        net_fd_t cfd = (net_fd_t)TCP_INVALID_FD;
+        int rc = tcp_accept((tcp_fd_t)fd, /*nonblock=*/1, &cfd, NULL, NULL);
+        if (rc == 1) break;            /* would-block: очередь пуста */
+        if (rc < 0) break;             /* ошибка — выходим из цикла */
+        /* cfd уже в O_NONBLOCK при rc==0 и nonblock=1 */
         /* аллоцируем соединение */
         EchoConn* c = (EchoConn*)calloc(1, sizeof(EchoConn));
-        c->echo = e; c->fd = (net_fd_t)cfd; c->is_client = 0; c->connecting = 0;
+        c->echo = e; c->fd = cfd; c->is_client = 0; c->connecting = 0;
         /* добавить в список */
         if (e->nconns == e->cap){
             int ncap = e->cap? e->cap*2 : 8;
@@ -256,7 +244,7 @@ void echo_destroy(Echo* e){
     /* закрыть listen */
     if (e->listening){
         net_poller_del(e->np, e->listen_fd);
-        net_close_fd(e->listen_fd);
+        tcp_close((tcp_fd_t)e->listen_fd);
         e->listening = 0;
     }
     free(e);
@@ -265,36 +253,17 @@ void echo_destroy(Echo* e){
 int echo_start_leader(Echo* e, uint16_t port){
     if (!e || !e->np) return -1;
     if (e->listening) return 0;
-    net_fd_t s = net_socket_tcp();
-    if ((intptr_t)s < 0){ s_log(e->sink,"net: socket() failed"); return -1; }
-    /* SO_REUSEADDR */
-    int yes=1;
-    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes));
-    struct sockaddr_in a; memset(&a,0,sizeof(a));
-    a.sin_family = AF_INET; a.sin_port = htons(port); a.sin_addr.s_addr = htonl(INADDR_ANY);
-    if (bind(s, (struct sockaddr*)&a, sizeof(a)) != 0){
-        net_close_fd(s); s_log(e->sink, "net: bind failed"); return -1;
-    }
-    if (listen(s, 64) != 0){
-        net_close_fd(s); s_log(e->sink, "net: listen failed"); return -1;
-    }
-    net_set_nonblocking(s, 1);
-    e->listen_fd = s; e->listening = 1;
+    tcp_fd_t s = tcp_listen(port, 64);
+    if ((intptr_t)s < 0){ s_log(e->sink, "net: listen failed"); return -1; }
+    e->listen_fd = (net_fd_t)s; e->listening = 1;
     net_poller_add(e->np, e->listen_fd, NET_RD|NET_ERR, s_on_listen, e);
     return 0;
 }
 
 int echo_start_client(Echo* e, const char* ip, uint16_t port){
     if (!e || !e->np || !ip || !*ip) return -1;
-    net_fd_t s = net_socket_tcp();
-    if ((intptr_t)s < 0){ s_log(e->sink,"net: socket() failed"); return -1; }
-    net_set_nonblocking(s, 1);
-    struct sockaddr_in a; memset(&a,0,sizeof(a));
-    a.sin_family = AF_INET; a.sin_port = htons(port);
-    if (inet_pton(AF_INET, ip, &a.sin_addr) != 1){
-        net_close_fd(s); s_log(e->sink,"net: bad ip (use IPv4 like 127.0.0.1)"); return -1;
-    }
-    int rc = net_connect_nb(s, (struct sockaddr*)&a, (int)sizeof(a));
+    tcp_fd_t s = (tcp_fd_t)TCP_INVALID_FD;
+    int rc = tcp_connect(ip, port, /*nonblock=*/1, &s);
     EchoConn* c = (EchoConn*)calloc(1, sizeof(EchoConn));
     c->echo = e; c->fd = s; c->connecting = (rc == NET_INPROGRESS); c->is_client = 1;
     /* добавить в список (чтобы закрыть на destroy) */

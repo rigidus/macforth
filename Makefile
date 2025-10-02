@@ -74,9 +74,18 @@ endif
 # wasm: подменим на заглушку при сборке emcc
 WEB_NET := $(NET_DIR)/net_stub_emscripten.c
 
-SRC_MAIN := main.c
+# Общая часть сети (независимо от платформенных реализаций сокетов)
+SRC_NET_COMMON := \
+  $(NET_DIR)/conop_wire.c \
+  $(NET_DIR)/tcp.c
 
-SRC_C := $(SRC_CORE) $(SRC_GFX) $(SRC_APPS) $(SRC_PLAT) $(SRC_NET) $(SRC_MAIN)
+
+# NB: wire_tcp.c собираем только на native, в wasm он не нужен (и не работает).
+
+SRC_MAIN := main.c
+TEST_DIR := tests
+
+SRC_C := $(SRC_CORE) $(SRC_GFX) $(SRC_APPS) $(SRC_PLAT) $(SRC_NET_COMMON) $(SRC_NET) $(SRC_MAIN)
 
 # ===== Unity build (опционально: make UNITY=1) =====
 # Собираем один файл unity_all.c, который #include-ит все *.c
@@ -233,11 +242,14 @@ linux:  all
 windows-mingw: CC?=x86_64-w64-mingw32-gcc
 windows-mingw: EXEEXT=.exe
 windows-mingw: NET_LIBS+=-lws2_32
+windows-mingw: SRC_NET += $(NET_DIR)/wire_tcp.c
+
 windows-mingw: all
 
 windows-msys: CC?=gcc
 windows-msys: EXEEXT=.exe
 windows-msys: NET_LIBS+=-lws2_32
+windows-msys: SRC_NET += $(NET_DIR)/wire_tcp.c
 windows-msys: all
 
 # ======= WebAssembly (Emscripten) =======
@@ -291,3 +303,26 @@ serve-py: wasm
 
 # ======= Автозависимости =======
 -include $(DEPS)
+
+# ======= Тесты =======
+.PHONY: test
+TEST_BIN := $(BUILD_DIR)/tests/test_conop_wire$(EXEEXT)
+TEST_OBJS := $(BUILD_DIR)/$(NET_DIR)/conop_wire.o $(BUILD_DIR)/$(TEST_DIR)/test_conop_wire.o
+
+$(BUILD_DIR)/$(TEST_DIR)/test_conop_wire.o: $(TEST_DIR)/test_conop_wire.c
+	$(Q)mkdir -p $(dir $@)
+	$(Q)$(CC) $(CFLAGS) -I$(SRC_DIR) -I$(INC_DIR) -c $< -o $@
+
+$(TEST_BIN): $(DIRS_TO_CREATE) $(TEST_OBJS)
+	$(Q)$(CC) $(TEST_OBJS) -o $@
+
+test: $(TEST_BIN)
+	@echo ">> Running tests"
+	@$(TEST_BIN)
+
+# Добавим wire_tcp.c к native-сборке (после выбора платформы)
+ifeq ($(OS),Windows_NT)
+  SRC_NET := $(SRC_NET) $(NET_DIR)/wire_tcp.c
+else
+  SRC_NET := $(SRC_NET) $(NET_DIR)/wire_tcp.c
+endif

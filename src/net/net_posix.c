@@ -1,5 +1,6 @@
 // === file: src/net/net_posix.c ===
 #include "net.h"
+#include "wire_tcp.h" /* header присутствует, но сам модуль используется опционально */
 #include <poll.h>
 #include <unistd.h>
 #include <fcntl.h>

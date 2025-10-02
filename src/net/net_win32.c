@@ -1,5 +1,6 @@
 // === file: src/net/net_win32.c ===
 #include "net.h"
+#include "wire_tcp.h" /* header присутствует, но сам модуль используется опционально */
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <stdlib.h>
