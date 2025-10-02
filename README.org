@@ -9,7 +9,7 @@
 ** Ubuntu:
 
 #+BEGIN_SRC sh
-  sudo apt install libsdl2-ttf-dev).
+  sudo apt install libsdl2-ttf-dev
 #+END_SRC
 
 ** Windows (MSYS2)
@@ -30,6 +30,15 @@
   ./emsdk install latest
   ./emsdk activate latest
   source ./emsdk_env.sh
+#+END_SRC
+
+emcc пытается скачать/распаковать порт FreeType в системный кэш /usr/share/emscripten/cache/ports, куда может не быть прав. Нужно направить кэш Emscripten в каталог, где можно писать. Это делает =wasm-setup=, при "замороженном" кэше emcc не имеет права ничего докачивать и требует уже готовый кэш. Разморозив его и указав путь, ты позволяешь emcc один раз скачать и собрать нужные порты в ~/.emscripten_cache. Затем сборки =make wasm= пойдут офлайн.
+
+#+BEGIN_SRC sh
+  make wasm-setup
+  make wasm
+  make serve
+  firefox 127.0.0.1:8080
 #+END_SRC
 
 * Files
@@ -53,7 +62,7 @@
       win_square.c  win_square.h
       win_console.c win_console.h
   main.c
-  /include            // публичные заголовки 
+  /include            // публичные заголовки
 #+END_SRC
 
 * Слои и их роли

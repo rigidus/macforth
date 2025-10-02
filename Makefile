@@ -166,9 +166,16 @@ WEB_OUT   := $(WEB_DIR)/index.html
 WEB_SRCS  := $(SRC_C)
 WEB_FLAGS := -O2 -sUSE_SDL=2 -sUSE_SDL_TTF=2 -sALLOW_MEMORY_GROWTH=1 -sASSERTIONS=1 -sEXIT_RUNTIME=0
 EMCFLAGS  := $(WEB_FLAGS)
+# Emscripten user config + writable cache (для портов FreeType/SDL_ttf)
+EM_CONFIG ?= ./.emscripten
+EM_CACHE  ?= ./.emscripten_cache
+export EM_CONFIG
+export EM_CACHE
+
+
 # ========================================================================
 
-.PHONY: all run clean mac linux windows-mingw windows-msys wasm serve serve-py tree
+.PHONY: all run clean mac linux windows-mingw windows-msys wasm wasm-setup wasm-info serve serve-py tree
 
 all: $(BIN)
 
@@ -240,6 +247,22 @@ $(WEB_DIR)/.assets: $(ASSETS)
 	$(Q)cp -R $(ASSETS) $(WEB_DIR)/
 	$(Q)touch $@
 
+## Один раз на машине: создать конфиг и разморозить кэш
+wasm-setup:
+	@echo ">> Generating/patching Emscripten config: $(EM_CONFIG)"
+	@[ -f "$(EM_CONFIG)" ] || env -u EM_CONFIG $(EMCC) --generate-config "$(EM_CONFIG)"
+	@mkdir -p "$(EM_CACHE)"
+	@sed -i -E 's/^FROZEN_CACHE *= *.*/FROZEN_CACHE = False/' "$(EM_CONFIG)"
+	@sed -i -E 's|^CACHE *= .*|CACHE = os.path.expanduser("$(EM_CACHE)")|' "$(EM_CONFIG)"
+	@echo ">> Done. CACHE=$(EM_CACHE); FROZEN_CACHE=False"
+
+## Диагностика конфигурации
+wasm-info:
+	@echo "EM_CONFIG = $(EM_CONFIG)"
+	@echo "EM_CACHE  = $(EM_CACHE)"
+	@{ [ -f "$(EM_CONFIG)" ] && grep -E '^(CACHE|FROZEN_CACHE) *=' "$(EM_CONFIG)" || echo "(no $(EM_CONFIG))"; } || true
+
+
 wasm: $(WEB_OUT)
 
 $(WEB_OUT): $(WEB_SRCS) $(WEB_DIR)/.assets | $(WEB_DIR)
@@ -247,6 +270,8 @@ $(WEB_OUT): $(WEB_SRCS) $(WEB_DIR)/.assets | $(WEB_DIR)
 	# Заменяем native-бэкенд сети на wasm-заглушку
 	$(eval WEB_SRCS := $(filter-out $(SRC_NET),$(WEB_SRCS)))
 	$(eval WEB_SRCS := $(WEB_SRCS) $(WEB_NET))
+	@[ -f "$(EM_CONFIG)" ] || $(MAKE) wasm-setup
+	@mkdir -p "$(EM_CACHE)"
 	$(Q)$(EMCC) $(filter-out -MMD -MP,$(CFLAGS)) $(CPPFLAGS) $(WEB_SRCS) $(EMCFLAGS) \
 	  --preload-file $(WEB_DIR)/assets@/assets \
 	  -o $(WEB_OUT)

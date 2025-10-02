@@ -52,29 +52,41 @@ static void s_net_hook(void* user, uint32_t now_ms){
         if (!busy) budget = NET_IDLE_BUDGET_MS;
     }
 #else
-    (void)now_ms; /* в wasm всегда неблокирующе */
+    /* в wasm всегда неблокирующе */
 #endif
     net_poller_tick(c->poller, now_ms, budget);
 }
 
 
 #ifdef __EMSCRIPTEN__
-typedef struct { Platform* plat; WM* wm; NetPoller* poller; LoopHookHandle* h_net; } LoopCtx;
+
+typedef struct {
+    Platform*       plat;
+    WM*             wm;
+    NetPoller*      poller;
+    LoopHookHandle* h_net;
+    /* консоль/репликация — храним тут, чтобы корректно разрушить из main loop */
+    ConsoleStore*     con_store;
+    ConsoleProcessor* con_proc;
+    ConsoleSink*      con_sink;
+    Replicator*       repl;
+} LoopCtx;
+
 static LoopCtx g_ctx;
 static void s_main_loop(void *p){
     LoopCtx* c = (LoopCtx*)p;
     bool running = plat_poll_events_and_dispatch(c->plat, c->wm);
     if (!running) {
-        /* отписываем хук и гасим поллер до полного завершения */
+        /* порядок как в native: сперва останавливаем цикл и уничтожаем WM, затем консоль/репликация, потом поллер и платформа */
         if (c->h_net) { loop_hook_remove(c->h_net); c->h_net = NULL; }
-        if (c->poller) { net_poller_destroy(c->poller); c->poller = NULL; }
-        con_sink_destroy(con_sink);
-        con_processor_destroy(con_proc);
-        replicator_destroy(repl);
-        con_store_destroy(con_store);
         emscripten_cancel_main_loop();
         wm_destroy(c->wm);
         text_shutdown();
+        if (c->con_proc)  { con_processor_destroy(c->con_proc); c->con_proc = NULL; }
+        if (c->con_sink)  { con_sink_destroy(c->con_sink);     c->con_sink = NULL; }
+        if (c->repl)      { replicator_destroy(c->repl);        c->repl = NULL; }
+        if (c->con_store) { con_store_destroy(c->con_store);    c->con_store = NULL; }
+        if (c->poller)    { net_poller_destroy(c->poller);      c->poller = NULL; }
         plat_destroy(c->plat);
         return;
     }
@@ -113,7 +125,12 @@ int main(void) {
         "assets/DejaVuSansMono.ttf";
 #   endif
     if (text_init(font_path, 18) != 0){
-        fprintf(stderr,"text init failed\n"); plat_destroy(plat); return 1;
+        fprintf(stderr,"text init failed\n");
+        /* снять хук и уничтожить поллер, чтобы не текло */
+        if (h_net) loop_hook_remove(h_net);
+        if (poller) net_poller_destroy(poller);
+        plat_destroy(plat);
+        return 1;
     }
 
     int sw, sh; plat_get_output_size(plat, &sw, &sh);
@@ -201,11 +218,16 @@ int main(void) {
     return 0;
 #else
     /* web-петля */
-    g_ctx.plat = plat;
-    g_ctx.wm   = wm;
-    g_ctx.poller = poller;
+    g_ctx.plat      = plat;
+    g_ctx.wm        = wm;
+    g_ctx.poller    = poller;
     /* user контекст уже указывает на статический s_nethook_ctx */
-    g_ctx.h_net  = h_net;
+    g_ctx.h_net     = h_net;
+    /* сохранить объекты консоли для корректного destroy() внутри s_main_loop */
+    g_ctx.con_store = con_store;
+    g_ctx.con_proc  = con_proc;
+    g_ctx.con_sink  = con_sink;
+    g_ctx.repl      = repl;
     emscripten_set_main_loop_arg(s_main_loop, &g_ctx, 0 /*fps*/, 1 /*simulate_infinite_loop*/);
     return 0; /* сюда фактически не вернёмся */
 #endif

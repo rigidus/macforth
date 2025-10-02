@@ -69,10 +69,10 @@ import sys
 
 # ───--- НАСТРОЙКИ ---───
 INCLUDE_EXTENSIONS   = {'.c', '.h'}            # включать файлы с этими расширениями
-EXCLUDE_EXTENSIONS   = {'.o'}   # исключать файлы с этими расширениями
+EXCLUDE_EXTENSIONS   = {'.o', '.md'}   # исключать файлы с этими расширениями
 
 INCLUDE_FILENAMES    = {'Makefile'}              # точные имена файлов для включения
-EXCLUDE_FILENAMES    = {'output.md', 'README.org'}              # точные имена файлов для исключения
+EXCLUDE_FILENAMES    = {'output.md', 'README.org', '.emscripten'}              # точные имена файлов для исключения
 
 INCLUDE_REGEXES = [                       # regex-паттерны для включения (имя и расширение)
     re.compile(r'^\d+$'),                 #   — только цифры
@@ -85,32 +85,9 @@ EXCLUDE_REGEXES = [                       # regex-паттерны для иск
 INCLUDE_SHEBANG = True                    # брать скрипты без расширения с #! в первой строке
 
 EXCLUDE_DIRS = {                          # пути каталогов, которые пропускаем целиком
-    'internal/bluetooth',
-    'internal/external_api',
-    'internal/internal_api',
-    # 'internal/ipc',
-    'internal/usecases',
-    'internal/services/app_installer',
-    'internal/services/cluster_api',
-    'internal/services/cluster_manager',
-    'internal/services/connection_manager',
-    # 'internal/services/https_server',
-    'internal/services/key_manager',
-    'internal/services/libp2p_node',
-    'internal/services/nats_server',
-    # 'internal/services/storage',
-    'internal/services/sys_info',
-    'internal/services/user_manager',
-    'internal/services/vm_manager',
-    'internal/services/voice',
-    'pb',
-    'internal/util',
-    'internal/event_handlers',
-    'internal/ipc/wifi',
-    'internal/ipc/vm',
-    'internal/ipc/disk',
-    'internal/ipc/bluetooth',
-    'internal/ipc/security',
+    '.emscripten_cache',
+    '.git',
+    'web',
 }
 # ───────────────────────
 

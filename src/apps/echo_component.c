@@ -72,14 +72,6 @@ static void s_conn_close(Echo* e, EchoConn* c){
     s_conn_free(e, c);
 }
 
-static void s_set_interest(Echo* e, EchoConn* c, int rd, int wr){
-    int mask = 0;
-    if (rd) mask |= NET_RD;
-    if (wr) mask |= NET_WR;
-    mask |= NET_ERR;
-    net_poller_add(e->np, c->fd, mask, /*cb set ниже*/ NULL, NULL); /* будем перезаписывать cb отдельно */
-}
-
 /* ---- IO helpers ---- */
 static int s_nb_recv(net_fd_t fd, char* buf, int cap){
 #if defined(_WIN32)
@@ -102,10 +94,6 @@ static int s_nb_send(net_fd_t fd, const char* buf, int n){
 static void s_on_conn(void* user, net_fd_t fd, int ev);
 static void s_on_listen(void* user, net_fd_t fd, int ev);
 static void s_on_client_connecting(void* user, net_fd_t fd, int ev);
-
-static void s_enable_cb(Echo* e, EchoConn* c, NetFdCb cb, int mask){
-    net_poller_add(e->np, c->fd, mask|NET_ERR, cb, c);
-}
 
 static void s_on_conn(void* user, net_fd_t fd, int ev){
     (void)fd;
