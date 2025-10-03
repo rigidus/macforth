@@ -98,9 +98,11 @@ EXCLUDE_DIRS = {                          # пути каталогов, кот�
 
 # Файлы, которые включаем всегда, даже если их каталоги в EXCLUDE_DIRS
 ALWAYS_INCLUDE_FILES = {
-    # примеры:
-    'src/include/config.h',
-    'web/index.html',
+    'src/apps/console_processor.c',
+    'src/apps/console_processor_ext.c',
+    'src/apps/console_sink.c',
+    # 'src/apps/console_store.c',
+    # 'src/apps/win_console.c',
 }
 
 # ───────────────────────
