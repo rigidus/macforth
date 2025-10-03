@@ -52,14 +52,18 @@ static inline void rd_pos(const uint8_t** p, ConPosId* out){
 }
 
 static inline size_t header_without_prefix_bytes(void){
-    /* magic[4] + ver(2) + type(2) +
+    /* magic[4] + ver(2) +
+       topic.type_id(8) + topic.inst_id(8) + schema(4) +
+       type(2) +
        console_id(8) + op_id(8) + actor_id(4) + hlc(8) + user_id(4) +
        widget_id(8) + widget_kind(4) + new_item_id(8) + parent_left(8) + parent_right(8) +
        ConPosId (1 + N*(2+4)) +
        init_hash(8) + prompt_edits_inc(4) + prompt_nonempty(4) +
        tag_len(4) + data_len(4) + init_len(4)
     */
-    return 4 + 2 + 2 +
+    return 4 + 2 +
+        8 + 8 + 4 +
+        2 +
         8 + 8 + 4 + 8 + 4 +
         8 + 4 + 8 + 8 + 8 +
         pos_bytes() +
@@ -82,6 +86,15 @@ int conop_wire_encode(const ConOp* op, uint8_t** out_buf, size_t* out_len){
     const uint32_t frame_payload_len = (uint32_t)(hdr + tag_len + data_len + init_len); /* после u32 длины */
     const size_t total = 4u /* frame prefix */ + frame_payload_len;
 
+    /* Определяем topic для кодирования:
+       если не задан (оба поля == 0), трактуем как консоль по console_id */
+    TopicId topic = op->topic;
+    if (topic.type_id == 0 && topic.inst_id == 0){
+        topic.type_id = 1u;               /* TYPE_CONSOLE */
+        topic.inst_id = op->console_id;   /* совместимость */
+    }
+    uint32_t schema = op->schema;
+
     uint8_t* buf = (uint8_t*)malloc(total);
     if (!buf) return -1;
     uint8_t* p = buf;
@@ -91,6 +104,9 @@ int conop_wire_encode(const ConOp* op, uint8_t** out_buf, size_t* out_len){
     memcpy(p, CONOP_WIRE_MAGIC_STR, 4); p += 4;
     wr16(&p, (uint16_t)CONOP_WIRE_VERSION);
     /* header */
+    wr64(&p, (uint64_t)topic.type_id);
+    wr64(&p, (uint64_t)topic.inst_id);
+    wr32(&p, (uint32_t)schema);
     wr16(&p, (uint16_t)op->type);
     wr64(&p, (uint64_t)op->console_id);
     wr64(&p, (uint64_t)op->op_id);
@@ -151,8 +167,18 @@ int conop_wire_decode(const uint8_t* buf, size_t len,
     if ((size_t)(end - p) < header_without_prefix_bytes()) return -1;
     /* (ниже читаем поля; остатка точно достаточно) */
 
+    op.topic.type_id = (uint64_t)rd64(&p);
+    op.topic.inst_id = (uint64_t)rd64(&p);
+    op.schema        = (uint32_t)rd32(&p);
+    /* Защитa: если по каким-то причинам topic пуст — совместимость с "консолью" */
+    if (op.topic.type_id == 0 && op.topic.inst_id == 0){
+        op.topic.type_id = 1u; /* console */
+        /* заполнится ниже из console_id, но инициализируем на всякий */
+    }
     op.type        = (ConOpType)rd16(&p);
     op.console_id  = (uint64_t)rd64(&p);
+    /* Синхронизируем inst_id с console_id, если inst_id не задан */
+    if (op.topic.inst_id == 0) op.topic.inst_id = op.console_id;
     op.op_id       = (uint64_t)rd64(&p);
     op.actor_id    = (uint32_t)rd32(&p);
     op.hlc         = (uint64_t)rd64(&p);
@@ -226,7 +252,6 @@ void conop_wire_free_decoded(char* tag, void* data, void* init_blob){
 
 
 /* ======== Потоковый декодер ======== */
-static size_t min_size(size_t a, size_t b){ return a<b? a:b; }
 
 void cow1_decoder_init(Cow1Decoder* d){
     if (!d) return;

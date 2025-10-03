@@ -1,13 +1,14 @@
 #pragma once
-#ifndef __EMSCRIPTEN__
 #include <stddef.h>
 #include <stdint.h>
 #include "net.h"
 #include "net/conop_wire.h"
 
 #ifdef __cplusplus
-extern "C" {
+     extern "C" {
 #endif
+
+#ifndef __EMSCRIPTEN__
 
     typedef struct Cow1Tcp Cow1Tcp;
 
@@ -23,8 +24,8 @@ extern "C" {
 
     /* Очередь на отправку одного ConOp (внутри encode → send partial). Возврат 0 — ок. */
     int      cow1tcp_send(Cow1Tcp*, const ConOp* op);
+#endif /* __EMSCRIPTEN__ */
 
 #ifdef __cplusplus
-}
+    }
 #endif
-#endif /* !__EMSCRIPTEN__ */

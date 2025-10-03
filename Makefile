@@ -46,15 +46,22 @@ SRC_GFX := \
 SRC_APPS := \
   $(APPS_DIR)/global_state.c \
   $(APPS_DIR)/widget_color.c \
+  $(APPS_DIR)/console_processor_ext.c \
   $(APPS_DIR)/console_processor.c \
   $(APPS_DIR)/console_prompt.c \
   $(APPS_DIR)/console_store.c \
   $(APPS_DIR)/console_sink.c \
-  $(APPS_DIR)/replica_crdt_local.c \
   $(APPS_DIR)/win_paint.c \
   $(APPS_DIR)/win_square.c \
   $(APPS_DIR)/win_console.c \
   $(APPS_DIR)/echo_component.c \
+  $(SRC_DIR)/replication/type_registry.c \
+  $(SRC_DIR)/replication/hub.c \
+  $(SRC_DIR)/replication/repl_policy_default.c \
+  $(SRC_DIR)/replication/backends/local_loop.c \
+  $(SRC_DIR)/replication/backends/leader_tcp.c \
+  $(SRC_DIR)/replication/backends/crdt_mesh.c \
+  $(SRC_DIR)/replication/backends/client_tcp.c \
 
 
 SRC_PLAT := \
@@ -77,7 +84,8 @@ WEB_NET := $(NET_DIR)/net_stub_emscripten.c
 # Общая часть сети (независимо от платформенных реализаций сокетов)
 SRC_NET_COMMON := \
   $(NET_DIR)/conop_wire.c \
-  $(NET_DIR)/tcp.c
+  $(NET_DIR)/tcp.c \
+  $(NET_DIR)/wire_tcp.c
 
 
 # NB: wire_tcp.c собираем только на native, в wasm он не нужен (и не работает).
@@ -200,10 +208,10 @@ ifeq ($(UNITY),1)
   UNITY_FILE := $(BUILD_DIR)/unity_all.c
   SRC_C      := $(UNITY_FILE)
   OBJ        := $(BUILD_DIR)/unity_all.o
-$(UNITY_FILE): $(SRC_CORE) $(SRC_GFX) $(SRC_APPS) $(SRC_PLAT) $(SRC_NET) $(SRC_MAIN) | $(BUILD_DIR)/
+$(UNITY_FILE): $(SRC_CORE) $(SRC_GFX) $(SRC_APPS) $(SRC_PLAT) $(SRC_NET_COMMON) $(SRC_NET) $(SRC_MAIN) | $(BUILD_DIR)/
 	@echo "/* автогенерируемый unity build */" > $@
 	@echo "#include <stdio.h>" >> $@
-	@$(foreach F,$(filter-out $(UNITY_FILE),$(SRC_CORE) $(SRC_GFX) $(SRC_APPS) $(SRC_PLAT) $(SRC_NET) $(SRC_MAIN)), \
+	@$(foreach F,$(filter-out $(UNITY_FILE),$(SRC_CORE) $(SRC_GFX) $(SRC_APPS) $(SRC_PLAT) $(SRC_NET_COMMON) $(SRC_NET) $(SRC_MAIN)), \
 		echo "#include \"../$(F)\"" >> $@;)
 
 # Спец-правило компиляции именно этого файла (обходит паттерн %.o: %.c)
@@ -242,14 +250,11 @@ linux:  all
 windows-mingw: CC?=x86_64-w64-mingw32-gcc
 windows-mingw: EXEEXT=.exe
 windows-mingw: NET_LIBS+=-lws2_32
-windows-mingw: SRC_NET += $(NET_DIR)/wire_tcp.c
-
 windows-mingw: all
 
 windows-msys: CC?=gcc
 windows-msys: EXEEXT=.exe
 windows-msys: NET_LIBS+=-lws2_32
-windows-msys: SRC_NET += $(NET_DIR)/wire_tcp.c
 windows-msys: all
 
 # ======= WebAssembly (Emscripten) =======
@@ -264,8 +269,9 @@ wasm-setup:
 	@echo ">> Generating/patching Emscripten config: $(EM_CONFIG)"
 	@[ -f "$(EM_CONFIG)" ] || env -u EM_CONFIG $(EMCC) --generate-config "$(EM_CONFIG)"
 	@mkdir -p "$(EM_CACHE)"
-	@sed -i -E 's/^FROZEN_CACHE *= *.*/FROZEN_CACHE = False/' "$(EM_CONFIG)"
-	@sed -i -E 's|^CACHE *= .*|CACHE = os.path.expanduser("$(EM_CACHE)")|' "$(EM_CONFIG)"
+	# GNU/BSD sed portability: try GNU '-i -E', fallback to BSD '-i '' -E'
+	@sed -i -E 's/^FROZEN_CACHE *= *.*/FROZEN_CACHE = False/' "$(EM_CONFIG)" || sed -i '' -E 's/^FROZEN_CACHE *= *.*/FROZEN_CACHE = False/' "$(EM_CONFIG)"
+	@sed -i -E 's|^CACHE *= .*|CACHE = os.path.expanduser("$(EM_CACHE)")|' "$(EM_CONFIG)" || sed -i '' -E 's|^CACHE *= .*|CACHE = os.path.expanduser("$(EM_CACHE)")|' "$(EM_CONFIG)"
 	@echo ">> Done. CACHE=$(EM_CACHE); FROZEN_CACHE=False"
 
 ## Диагностика конфигурации
@@ -282,6 +288,11 @@ $(WEB_OUT): $(WEB_SRCS) $(WEB_DIR)/.assets | $(WEB_DIR)
 	# Заменяем native-бэкенд сети на wasm-заглушку
 	$(eval WEB_SRCS := $(filter-out $(SRC_NET),$(WEB_SRCS)))
 	$(eval WEB_SRCS := $(WEB_SRCS) $(WEB_NET))
+	# Не включаем TCP-leader бэкенд/клиент и wire-транспорт в wasm
+	$(eval WEB_SRCS := $(filter-out $(SRC_DIR)/replication/backends/leader_tcp.c,$(WEB_SRCS)))
+	$(eval WEB_SRCS := $(filter-out $(SRC_DIR)/replication/backends/client_tcp.c,$(WEB_SRCS)))
+	$(eval WEB_SRCS := $(filter-out $(NET_DIR)/wire_tcp.c,$(WEB_SRCS)))
+	# wasm-setup
 	@[ -f "$(EM_CONFIG)" ] || $(MAKE) wasm-setup
 	@mkdir -p "$(EM_CACHE)"
 	$(Q)$(EMCC) $(filter-out -MMD -MP,$(CFLAGS)) $(CPPFLAGS) $(WEB_SRCS) $(EMCFLAGS) \
@@ -309,6 +320,15 @@ serve-py: wasm
 TEST_BIN := $(BUILD_DIR)/tests/test_conop_wire$(EXEEXT)
 TEST_OBJS := $(BUILD_DIR)/$(NET_DIR)/conop_wire.o $(BUILD_DIR)/$(TEST_DIR)/test_conop_wire.o
 
+# второй тест — ReplHub policy/switch
+TEST_BIN2 := $(BUILD_DIR)/tests/test_repl_hub$(EXEEXT)
+TEST_OBJS2 := \
+  $(BUILD_DIR)/$(SRC_DIR)/replication/hub.o \
+  $(BUILD_DIR)/$(SRC_DIR)/replication/repl_policy_default.o \
+  $(BUILD_DIR)/$(SRC_DIR)/replication/backends/local_loop.o \
+  $(BUILD_DIR)/$(SRC_DIR)/replication/type_registry.o \
+  $(BUILD_DIR)/$(TEST_DIR)/test_repl_hub.o
+
 $(BUILD_DIR)/$(TEST_DIR)/test_conop_wire.o: $(TEST_DIR)/test_conop_wire.c
 	$(Q)mkdir -p $(dir $@)
 	$(Q)$(CC) $(CFLAGS) -I$(SRC_DIR) -I$(INC_DIR) -c $< -o $@
@@ -316,13 +336,14 @@ $(BUILD_DIR)/$(TEST_DIR)/test_conop_wire.o: $(TEST_DIR)/test_conop_wire.c
 $(TEST_BIN): $(DIRS_TO_CREATE) $(TEST_OBJS)
 	$(Q)$(CC) $(TEST_OBJS) -o $@
 
-test: $(TEST_BIN)
+$(BUILD_DIR)/$(TEST_DIR)/test_repl_hub.o: $(TEST_DIR)/test_repl_hub.c
+	$(Q)mkdir -p $(dir $@)
+	$(Q)$(CC) $(CFLAGS) -I$(SRC_DIR) -I$(INC_DIR) -c $< -o $@
+
+$(TEST_BIN2): $(DIRS_TO_CREATE) $(TEST_OBJS2)
+	$(Q)$(CC) $(TEST_OBJS2) -o $@
+
+test: $(TEST_BIN) $(TEST_BIN2)
 	@echo ">> Running tests"
 	@$(TEST_BIN)
-
-# Добавим wire_tcp.c к native-сборке (после выбора платформы)
-ifeq ($(OS),Windows_NT)
-  SRC_NET := $(SRC_NET) $(NET_DIR)/wire_tcp.c
-else
-  SRC_NET := $(SRC_NET) $(NET_DIR)/wire_tcp.c
-endif
+	@$(TEST_BIN2)

@@ -2,6 +2,7 @@
 #include "net/wire_tcp.h"
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 typedef struct {
     uint8_t* buf;

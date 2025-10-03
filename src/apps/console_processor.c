@@ -10,11 +10,17 @@
 #include <stdlib.h>
 #include <inttypes.h>
 
+
 struct ConsoleProcessor {
     ConsoleStore* store;
     ConsoleSink*  sink;  /* публикация ответов/виджетов через Sink */
     NetPoller*    np;    /* поллер из main */
     Echo*         echo;  /* эхо-компонент (сервер/клиент) */
+    /* === репликация / маршрутизация по топику === */
+    Replicator*   hub;
+    TopicId       topic;
+    int           b_leader, b_local, b_crdt; /* индексы бэкендов в hub (или -1) */
+    uint64_t      console_id;
 };
 
 /* вспомогательное — распечатать список виджетов с их ID (последние N) */
@@ -33,6 +39,16 @@ static void cmd_widgets(ConsoleProcessor* p){
         shown++;
     }
     if (shown==0 && p->sink) con_sink_append_line(p->sink, -1, "(no widgets in recent history)");
+}
+
+void con_processor_set_repl(ConsoleProcessor* p,
+                            Replicator* hub, TopicId topic,
+                            int idx_leader, int idx_local, int idx_crdt)
+{
+    if (!p) return;
+    p->hub      = hub;
+    p->topic    = topic;
+    p->b_leader = idx_leader; p->b_local = idx_local; p->b_crdt = idx_crdt;
 }
 
 static void reply(ConsoleProcessor* p, const char* s){
@@ -70,11 +86,24 @@ void con_processor_set_net(ConsoleProcessor* p, NetPoller* np){
     p->np = np;
 }
 
+void con_processor_set_repl_hub(ConsoleProcessor* p, Replicator* hub){ if(p) p->hub=hub; }
+
+Replicator* con_processor_get_repl_hub(ConsoleProcessor* p){ return p ? p->hub : NULL; }
+
+void con_processor_set_console_id(ConsoleProcessor* p, uint64_t cid){ if(p) p->console_id=cid; }
+
+uint64_t con_processor_get_console_id(ConsoleProcessor* p){ return p ? p->console_id : 0; }
+
+ConsoleSink* con_processor_get_sink(ConsoleProcessor* p){ return p ? p->sink : NULL; }
+
+
 static void trim_leading(const char** p){
     const char* s = *p;
     while (*s==' ' || *s=='\t') ++s;
     *p = s;
 }
+
+
 
 static int starts_with(const char* s, const char* kw){
     size_t n = strlen(kw);
@@ -83,6 +112,9 @@ static int starts_with(const char* s, const char* kw){
 
 void con_processor_on_command(ConsoleProcessor* p, const char* line){
     if (!p || !line) return;
+    /* сначала — расширенные команды сети/Hub */
+    if (con_processor_ext_try_handle(p, line)) return;
+    /* далее — остальная логика команд */
     const char* s = line;
     trim_leading(&s);
     if (*s==0) return;
@@ -90,6 +122,7 @@ void con_processor_on_command(ConsoleProcessor* p, const char* line){
     if (starts_with(s, "help")){
         reply(p, "commands: help | echo <text> | time | color | widgets | color set <id> <0..255>");
         reply(p, "net: net leader [port] | net client <ip> [port] | net stop");
+        reply(p, "replication: type 'help repl' for hub commands");
         return;
 
     }

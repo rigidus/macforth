@@ -69,9 +69,10 @@ import sys
 
 # ───--- НАСТРОЙКИ ---───
 INCLUDE_EXTENSIONS   = {'.c', '.h'}            # включать файлы с этими расширениями
-EXCLUDE_EXTENSIONS   = {'.o', '.md'}   # исключать файлы с этими расширениями
+EXCLUDE_EXTENSIONS   = {'.o', '.md', '.data', 'js', 'wasm', 'txt'}   # исключать файлы с этими расширениями
 
-INCLUDE_FILENAMES    = {'Makefile'}              # точные имена файлов для включения
+# точные имена файлов для включения
+INCLUDE_FILENAMES    = {'Makefile'}
 EXCLUDE_FILENAMES    = {'output.md', 'README.org', '.emscripten'}              # точные имена файлов для исключения
 
 INCLUDE_REGEXES = [                       # regex-паттерны для включения (имя и расширение)
@@ -88,7 +89,20 @@ EXCLUDE_DIRS = {                          # пути каталогов, кот�
     '.emscripten_cache',
     '.git',
     'web',
+    'src/core',
+    'src/gfx',
+    'src/apps',
+    # 'src/include',
+
 }
+
+# Файлы, которые включаем всегда, даже если их каталоги в EXCLUDE_DIRS
+ALWAYS_INCLUDE_FILES = {
+    # примеры:
+    'src/include/config.h',
+    'web/index.html',
+}
+
 # ───────────────────────
 
 
@@ -137,6 +151,7 @@ def should_include(fname: str, dpath: str) -> bool:
 
 def concatenate_files(output_file: str = 'output.md') -> None:
     root_start = os.path.abspath('.')      # нужна для корректного относительного пути
+    included_abs = set()                   # чтобы не задублировать, если файл уже попал из разрешённых директорий
 
     with open(output_file, 'w', encoding='utf-8') as out:
         for root, dirs, files in os.walk('.'):
@@ -168,6 +183,26 @@ def concatenate_files(output_file: str = 'output.md') -> None:
                         out.write(inp.read())
                         out.write('\n```\n\n')
 
+        # ── ДОКЛЕЙКА: добавляем явные файлы из исключённых каталогов ──
+        for rel_path in ALWAYS_INCLUDE_FILES:
+            abs_path = os.path.abspath(rel_path)
+            if abs_path in included_abs:
+                continue  # уже добавлен обычным путём
+
+            try:
+                size = os.path.getsize(abs_path)
+            except OSError:
+                # файл не найден — пропускаем (можно залогировать)
+                continue
+
+            rel = os.path.relpath(abs_path, root_start)
+            print(f"{size:>10} {rel}", file=sys.stderr)
+
+            with open(abs_path, 'r', encoding='utf-8', errors='ignore') as inp:
+                out.write('```\n')
+                out.write(f'// {rel}\n')
+                out.write(inp.read())
+                out.write('\n```\n\n')
 
 if __name__ == '__main__':
     concatenate_files()

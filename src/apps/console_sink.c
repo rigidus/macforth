@@ -2,6 +2,9 @@
 #include <string.h>
 #include "console/sink.h"
 #include "console/replicator.h"
+/* Для TopicId и репликаторного API set_listener */
+#include "replication/repl_types.h"
+#include "replication/repl_iface.h"
 #include <SDL.h>
 #include "apps/widget_color.h"
 #include <stdint.h>
@@ -215,13 +218,20 @@ ConsoleSink* con_sink_create(ConsoleStore* store, ConsoleProcessor* proc, Replic
     s->is_listener = is_listener ? 1 : 0;
     memset(&s->blobs, 0, sizeof(s->blobs));
     if (repl && s->is_listener){
-        replicator_set_confirm_listener(repl, s->console_id, on_confirm, s);
+        TopicId t = { .type_id = 1u, .inst_id = s->console_id };
+        replicator_set_listener(repl, t, on_confirm, s);
     }
-        return s;
+    return s;
 }
 
 void con_sink_destroy(ConsoleSink* s){
     if (!s) return;
+    /* Снять подписку listener’а с репликатора для консольной темы */
+    if (s && s->repl){
+        replicator_unset_listener(
+            s->repl, (TopicId){ .type_id = 1, .inst_id = s->console_id }
+            );
+    }
     free(s);
 }
 

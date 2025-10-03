@@ -4,6 +4,8 @@
 #include "store.h"
 #include "processor.h"
 #include "replicator.h"
+/* Нужен тип Replicator и его обёртки */
+#include "replication/repl_iface.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -14,6 +16,7 @@ extern "C" {
     /* sink делает локальную спекуляцию и публикует операции через Replicator.
        is_listener != 0 — этот sink регистрируется как получатель «подтверждённых» op-ов. */
     ConsoleSink* con_sink_create(ConsoleStore* store, ConsoleProcessor* proc, Replicator* repl, uint64_t console_id, int is_listener);
+
     void         con_sink_destroy(ConsoleSink* s);
 
     /* user_id - мультипользовательские промпты */

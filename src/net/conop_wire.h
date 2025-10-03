@@ -1,7 +1,8 @@
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
-#include "console/replicator.h"  /* ConOp, ConOpType */
+#include "net.h"
+#include "common/conop.h"   /* ConOp, ConOpType, ConPosId */
 
 #ifdef __cplusplus
 extern "C" {
@@ -27,6 +28,9 @@ extern "C" {
        u32   frame_len_le   // длина всего кадра ПОСЛЕ этого поля
        char  magic[4] = "COW1"
        u16   ver = 1
+       u64   topic.type_id
+       u64   topic.inst_id
+       u32   schema
        u16   type
        u64   console_id
        u64   op_id

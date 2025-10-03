@@ -6,6 +6,9 @@
 
 static ConOp make_op_basic(void){
     ConOp o; memset(&o, 0, sizeof(o));
+    o.topic.type_id = 1; /* console */
+    o.topic.inst_id = 42;
+    o.schema = 0;
     o.type = CON_OP_INSERT_TEXT;
     o.console_id = 42;
     o.op_id = 123456789ull;

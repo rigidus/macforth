@@ -1,15 +1,14 @@
 // main.c — точка входа
-
+#include <inttypes.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdbool.h>
 #include <stdint.h>
-
+#include <string.h>
 #include "core/wm.h"
 #include "core/window.h"
-
+#include "core/drag.h"
 #include "platform/platform_sdl.h"
-
 #include "apps/win_paint.h"
 #include "apps/win_square.h"
 #include "apps/win_console.h"
@@ -17,6 +16,16 @@
 #include "console/sink.h"
 #include "console/processor.h"
 #include "console/replicator.h"
+#include "replication/type_registry.h"
+#include "replication/hub.h"
+#include "replication/backends/leader_tcp.h"
+#include "replication/backends/local_loop.h"
+#include "replication/backends/crdt_mesh.h"
+#include "replication/backends/client_tcp.h"
+
+#if defined(_WIN32) && !defined(__MINGW32__)
+#  define strtok_r(s,delim,saveptr) strtok_s((s),(delim),(saveptr))
+#endif
 
 #include "gfx/text.h"
 
@@ -33,6 +42,27 @@ typedef struct {
     NetPoller* poller;
     WM*        wm;
 } NetHookCtx;
+
+/* ===== Helpers: чтение чисел из окружения ===== */
+static uint64_t env_u64(const char* name, uint64_t def){
+    const char* s = getenv(name);
+    if (!s || !*s) return def;
+    char* end = NULL;
+    unsigned long long v = strtoull(s, &end, 0); /* base=0: поддержит 10/16 (0x...) */
+    if (end == s) return def;
+    return (uint64_t)v;
+}
+static int env_int(const char* name, int def){
+    const char* s = getenv(name);
+    if (!s || !*s) return def;
+    char* end = NULL;
+    long v = strtol(s, &end, 0); /* base=0 */
+    if (end == s) return def;
+    /* без отрицательных портов */
+    if (v < 0) return 0;
+    if (v > 65535) v = 65535;
+    return (int)v;
+}
 
 /* Небольшой таймаут, который не заметен для UI, но снижает пустой оборот CPU */
 #ifndef NET_IDLE_BUDGET_MS
@@ -98,6 +128,33 @@ static void s_main_loop(void *p){
 }
 #endif
 
+/* === Регистрация типа «консоль» (file-scope helpers) === */
+
+
+static void s_console_init_from_blob(void* user, uint32_t schema,
+                                     const void* blob, size_t len){
+    con_processor_init_from_blob((ConsoleProcessor*)user, schema, blob, len);
+}
+
+static void s_console_apply(void* user, const ConOp* op){
+    ConsoleProcessor* p = (ConsoleProcessor*)user;
+    con_processor_apply_external(p, op);
+}
+
+static int s_console_snapshot(void* user,
+                              uint32_t* out_schema,
+                              void** out_blob, size_t* out_len){
+    return con_processor_snapshot((ConsoleProcessor*)user,
+                                  out_schema, out_blob, out_len);
+}
+
+static const TypeVt s_console_type_vt = {
+    .name = "console",
+    .init_from_blob = s_console_init_from_blob,
+    .apply = s_console_apply,
+    .snapshot = s_console_snapshot,
+};
+
 
 int main(void) {
     Platform *plat = plat_create("Cross WM", 800, 600);
@@ -157,15 +214,79 @@ int main(void) {
     /* ===== Консольная модель и процессор (до создания промптов) ===== */
     ConsoleStore*     con_store = con_store_create();
     ConsoleProcessor* con_proc  = con_processor_create(con_store);
-    /* Репликатор (локальный «лидер» в том же процессе) */
-    Replicator*       repl      = replicator_create_crdt_local();
-    /* Выделим идентификатор ленты/консоли (для одного demo — просто 1) */
-    uint64_t console_id = 1;
+
+
+    /* Выберем фиксированный type_id для консоли (1). */
+    type_registry_register_default(/*type_id=*/1u, &s_console_type_vt, con_proc);
+
+    /* === ReplHub (шлюз/роутер) ===
+    /* Собираем доступные бэкенды и отдаём их в Hub c приоритетами. */
+
+    /* Параметры из окружения:
+       CONSOLE_ID  → console_id (u64, по умолчанию 1)
+       LEADER_PORT → порт лидера (int, по умолчанию 33334; 0 — отключить)
+       MESH_PORT   → порт CRDT mesh (int, по умолчанию 33335; 0 — отключить)
+       MESH_SEEDS  → уже поддержан (host1,host2,...)
+       CLIENT_HOST + CLIENT_PORT → авто-коннект клиента (native)
+    */
+    uint64_t console_id = env_u64("CONSOLE_ID", 1);
+    int leader_port = env_int("LEADER_PORT", 33334);
+    int mesh_port   = env_int("MESH_PORT",   33335);
+    const char* client_host = getenv("CLIENT_HOST");
+    int client_port  = env_int("CLIENT_PORT", 0);
+
+    ReplBackendRef backends[4];
+    int bn = 0;
+
+    // leader/local — всегда пробуем
+    Replicator* b_local  = replicator_create_local_loop();
+    Replicator* b_leader = NULL;
+    if (leader_port > 0){
+        b_leader = replicator_create_leader_tcp(poller, console_id, (uint16_t)leader_port);
+    }
+    /* клиент (по умолчанию не подключаемся; целевой host/port зададим командами) */
+    /* клиент: если заданы CLIENT_HOST/CLIENT_PORT — подключаемся сразу */
+    Replicator* b_client = replicator_create_client_tcp(
+        poller, console_id,
+        (client_host && *client_host && client_port > 0) ? client_host : NULL,
+        (uint16_t)client_port
+        );
+
+    if (b_leader) backends[bn++] = (ReplBackendRef){ .r=b_leader, .priority=100 };
+    if (b_local)  backends[bn++] = (ReplBackendRef){ .r=b_local,  .priority=10  };
+#if !defined(__EMSCRIPTEN__)
+    if (b_client) backends[bn++] = (ReplBackendRef){ .r=b_client, .priority=90 };
+#endif
+
+    // mesh — только native; порт из MESH_PORT; seeds из MESH_SEEDS (host1,host2)
+#if !defined(__EMSCRIPTEN__)
+    const char* seeds_env = getenv("MESH_SEEDS");
+    const char* seeds_arr[8]; int sn=0;
+    char tmpbuf[256] = {0};
+    if (seeds_env && *seeds_env){
+        strncpy(tmpbuf, seeds_env, sizeof(tmpbuf)-1);
+        char* save = NULL;
+        for (char* tok = strtok_r(tmpbuf, ",", &save); tok && sn<8; tok = strtok_r(NULL, ",", &save)){
+            seeds_arr[sn++] = tok;
+        }
+    }
+    if (mesh_port > 0){
+        Replicator* b_mesh = replicator_create_crdt_mesh(poller, (uint16_t)mesh_port, sn?seeds_arr:NULL, sn);
+        if (b_mesh) backends[bn++] = (ReplBackendRef){ .r=b_mesh, .priority=50 };
+    }
+#endif
+
+    /* Требования по умолчанию: без специфики, политика сама выберет LEADER>LOCAL. */
+    Replicator* repl = replicator_create_hub(backends, bn, /*required_caps=*/0, /*adopt_backends=*/1);
 
     /* Sink: локальная спекуляция + подтверждения от репликатора */
     ConsoleSink*      con_sink  = con_sink_create(con_store, con_proc, repl, console_id, /*is_listener=*/1);
     /* Процессор публикует ответы через sink */
     con_processor_set_sink(con_proc, con_sink);
+
+    /* Дадим процессору доступ к Hub/console_id — для рантайм-команд. */
+    con_processor_set_repl_hub(con_proc, repl);
+    con_processor_set_console_id(con_proc, console_id);
 
     /* Сеть - в процессор (для команд net leader/net client) */
     con_processor_set_net(con_proc, poller);

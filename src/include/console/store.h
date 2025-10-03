@@ -3,6 +3,9 @@
 #include <stdint.h>
 #include "console/widget.h"
 
+/* Единый источник типов ConOp/ConPosId */
+#include "console/replicator.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -30,25 +33,13 @@ extern "C" {
 #define CON_MAX_USERS 8
 #endif
 
-    /*  стабильные ID элементов (для адресации в сети/CRDT) */
-    typedef uint64_t ConItemId;
-
+#ifndef CON_ITEMID_INVALID
 #   define CON_ITEMID_INVALID ((ConItemId)0)
+#endif
 
     typedef struct ConsoleStore ConsoleStore;
     typedef void (*ConsoleStoreListener)(void* user);
 
-
-    /* ===== CRDT позиция (Logoot/LSEQ-подобная) =====
-       Идентификатор позиции — лексикографический список компонентов (digit,actor).
-       depth — фактическая длина (<= CON_POS_MAX_DEPTH). */
-    typedef struct {
-        uint8_t depth;
-        struct {
-            uint16_t digit;   /* 0..65535 */
-            uint32_t actor;   /* кто «поставил» компонент */
-        } comp[CON_POS_MAX_DEPTH];
-    } ConPosId;
 
     /* Сравнение позиций: <0 если a<b, >0 если a>b, 0 если равны. */
     int  con_pos_cmp(const ConPosId* a, const ConPosId* b);

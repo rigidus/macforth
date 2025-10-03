@@ -4,7 +4,6 @@
 #include "core/window.h"     /* InputEvent */
 #include "console/sink.h"    /* ConsoleSink */
 #include "gfx/surface.h"
-#include "core/window.h"     /* InputEvent */
 #include "console/store.h"   /* ConsoleStore */
 
 #ifdef __cplusplus
