@@ -219,7 +219,7 @@ int main(void) {
     /* Выберем фиксированный type_id для консоли (1). */
     type_registry_register_default(/*type_id=*/1u, &s_console_type_vt, con_proc);
 
-    /* === ReplHub (шлюз/роутер) ===
+    /* === ReplHub (шлюз/роутер) === */
     /* Собираем доступные бэкенды и отдаём их в Hub c приоритетами. */
 
     /* Параметры из окружения:

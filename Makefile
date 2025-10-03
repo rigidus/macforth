@@ -67,9 +67,6 @@ SRC_APPS := \
 SRC_PLAT := \
   $(PLAT_DIR)/platform_sdl.c
 
-SRC_NET := \
-  $(NET_DIR)/poller.c
-
 # ====== Сеть (кроссплатформенно) ======
 # native: выбираем POSIX/Win32
 ifeq ($(OS),Windows_NT)

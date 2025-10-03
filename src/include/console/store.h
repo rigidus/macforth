@@ -26,8 +26,6 @@ extern "C" {
 #define CON_BUF_LINES  1024
 #endif
 
-#define CON_POS_MAX_DEPTH 8
-
 /* Лимит пользователей для промптов/индикаторов (держим синхронно с WM_MAX_USERS) */
 #ifndef CON_MAX_USERS
 #define CON_MAX_USERS 8
@@ -40,6 +38,7 @@ extern "C" {
     typedef struct ConsoleStore ConsoleStore;
     typedef void (*ConsoleStoreListener)(void* user);
 
+    int con_store_serialize(ConsoleStore* st, void** out_blob, size_t* out_len);
 
     /* Сравнение позиций: <0 если a<b, >0 если a>b, 0 если равны. */
     int  con_pos_cmp(const ConPosId* a, const ConPosId* b);

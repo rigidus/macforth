@@ -4,21 +4,20 @@
 #include <stdbool.h>
 #include <stddef.h>  /* size_t */
 
-
 /* Не тянем детали ConOp здесь: достаточно forward-declare. */
 struct ConOp;
-
-struct Replicator;
-typedef struct Replicator Replicator;
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-    typedef struct ConsoleProcessor ConsoleProcessor;
-
     /* forward declare, чтобы избежать циклических include */
-    typedef struct ConsoleSink ConsoleSink;
+    typedef struct ConsoleProcessor ConsoleProcessor;
+    typedef struct ConsoleSink      ConsoleSink;
+    typedef struct Replicator       Replicator;
+    typedef struct ConsoleStore     ConsoleStore;
+
+    ConsoleStore* con_processor_get_store(ConsoleProcessor* self);
 
     ConsoleProcessor* con_processor_create(ConsoleStore* store);
     void              con_processor_destroy(ConsoleProcessor*);

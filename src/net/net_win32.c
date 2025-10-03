@@ -1,4 +1,3 @@
-// === file: src/net/net_win32.c ===
 #include "net.h"
 #include "wire_tcp.h" /* header присутствует, но сам модуль используется опционально */
 #include <winsock2.h>
@@ -126,6 +125,5 @@ int net_get_so_error(net_fd_t fd){
 
 int net_connect_finished(net_fd_t fd){
     int err = net_get_so_error(fd);
-    if (err == 0) return NET_OK;
-    return NET_ERR_GENERIC;
+    return (err == 0) ? NET_OK : NET_ERR_GENERIC;
 }
