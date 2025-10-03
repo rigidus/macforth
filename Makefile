@@ -55,6 +55,7 @@ SRC_APPS := \
   $(APPS_DIR)/win_square.c \
   $(APPS_DIR)/win_console.c \
   $(APPS_DIR)/echo_component.c \
+  $(APPS_DIR)/console_processor_ext_stubs.c \
   $(SRC_DIR)/replication/type_registry.c \
   $(SRC_DIR)/replication/hub.c \
   $(SRC_DIR)/replication/repl_policy_default.c \
